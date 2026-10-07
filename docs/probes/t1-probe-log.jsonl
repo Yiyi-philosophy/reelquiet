@@ -1,0 +1,69 @@
+{"t":1791387088847,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387088894,"ev":"session.start","surfaces":["terminal"]}
+{"t":1791387098548,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387098548,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387183301,"ev":"turn.start"}
+{"t":1791387183336,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387183336,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387185090,"ev":"tool.call.enter","tool":"Bash","id":"chatcmpl-tool-987f6892d6180fda"}
+{"t":1791387185099,"ev":"tool.check","tool":"Bash","id":"chatcmpl-tool-987f6892d6180fda","agentId":null,"decision":"allow"}
+{"t":1791387189125,"ev":"tool.call.settle","tool":"Bash","id":"chatcmpl-tool-987f6892d6180fda"}
+{"t":1791387189692,"ev":"turn.complete","aborted":false}
+{"t":1791387189706,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387189706,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387227743,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387227743,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387228249,"ev":"turn.start"}
+{"t":1791387228263,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387228263,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387229081,"ev":"tool.call.enter","tool":"Bash","id":"chatcmpl-tool-9caa6ab44b649a9b"}
+{"t":1791387229090,"ev":"tool.check","tool":"Bash","id":"chatcmpl-tool-9caa6ab44b649a9b","agentId":null,"decision":"ask"}
+{"t":1791387235100,"ev":"notification","type":"permission_prompt"}
+{"t":1791387256739,"ev":"tool.call.settle","tool":"Bash","id":"chatcmpl-tool-9caa6ab44b649a9b"}
+{"t":1791387258310,"ev":"turn.complete","aborted":false}
+{"t":1791387258327,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387258327,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387276451,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387276451,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387276956,"ev":"turn.start"}
+{"t":1791387276969,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387276969,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387277381,"ev":"tool.call.enter","tool":"Bash","id":"chatcmpl-tool-a0db133c0ca69e4c"}
+{"t":1791387277389,"ev":"tool.check","tool":"Bash","id":"chatcmpl-tool-a0db133c0ca69e4c","agentId":null,"decision":"allow"}
+{"t":1791387280956,"ev":"PromptHint","isDraft":true,"isWorking":true}
+{"t":1791387280956,"ev":"PromptHint","isDraft":true,"isWorking":true}
+{"t":1791387281360,"ev":"press.digit"}
+{"t":1791387281360,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387281360,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387282458,"ev":"PromptHint","isDraft":true,"isWorking":true}
+{"t":1791387282458,"ev":"PromptHint","isDraft":true,"isWorking":true}
+{"t":1791387283960,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387283960,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387287403,"ev":"tool.call.settle","tool":"Bash","id":"chatcmpl-tool-a0db133c0ca69e4c"}
+{"t":1791387287854,"ev":"turn.complete","aborted":false}
+{"t":1791387287865,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387287865,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387302813,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387302813,"ev":"PromptHint","isDraft":true,"isWorking":false}
+{"t":1791387303311,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387303311,"ev":"PromptHint","isDraft":false,"isWorking":true}
+{"t":1791387311414,"ev":"keys","N":5000,"count":5000,"tWrite":8100,"tKeys":3,"tFilter":0,"prefixHits":1111}
+{"t":1791387319776,"ev":"keys.cleaned"}
+{"t":1791387319784,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387319784,"ev":"PromptHint","isDraft":false,"isWorking":false}
+{"t":1791387089000,"ev":"blit","frame":1,"deny":null}
+{"t":1791387091023,"ev":"blit","frame":21,"deny":null}
+{"t":1791387093043,"ev":"blit","frame":41,"deny":null}
+{"t":1791387098536,"ev":"MARK submit"}
+{"t":1791387128615,"ev":"MARK dialog-visible"}
+{"t":1791387135903,"ev":"MARK submit2"}
+{"t":1791387176000,"ev":"MARK dialog-visible"}
+{"t":1791387196298,"ev":"MARK submitted-cm"}
+{"t":1791387216395,"ev":"MARK dialog-visible"}
+{"t":1791387228238,"ev":"MARK submit-perm"}
+{"t":1791387229244,"ev":"MARK dialog-visible"}
+{"t":1791387252702,"ev":"MARK approve"}
+{"t":1791387276947,"ev":"MARK submit-work"}
+{"t":1791387280949,"ev":"MARK work-digit"}
+{"t":1791387282451,"ev":"MARK work-type-x"}
+{"t":1791387283954,"ev":"MARK work-clear"}

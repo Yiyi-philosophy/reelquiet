@@ -34,7 +34,7 @@ Claude Fish 要把这段等待变成一件**安静、真实、能留下来**的�
 - Mod 读不到键盘。唯一不需要切换焦点的输入方式是：横条上的数字热键按钮，在**空提示框**里单独输入该数字时触发。另外可以用 `action` 绑定一个组合键，但用户需要先自己配置。
 - 重绘上限：可见的横条或面板最多 30 fps。面板分两档：mod 自己弹出需要终端 **≥144 列**；用户手动打开过一次之后降到 **≥110 列**。
 - `$.store`：文档说明它是"本插件自己的 JSON 文件，放在 `~/.claude/plugins/store/` 下"，所以 4 MiB 的上限**按插件计算**（由 OQ9 确认）。所有会话共享，读写不是原子操作，支持 `keys()` 列出全部键，超过 `cleanupPeriodDays` 没有读写会被清理。
-- 单个 hook 最多执行 10 秒。模块里没有 Node API，也没有 `setTimeout`；定时用 `$.clock`，动画用 `$.ui.blit`。
+- 单个 hook 最多执行 10 秒，**`next` 内部的等待不计入**。T1 实测：权限确认等待 23.6 秒，hook 没有被跳过。模块里没有 Node API，也没有 `setTimeout`；定时用 `$.clock`，动画用 `$.ui.blit`。
 
 ## Premises（已确认）
 
@@ -217,13 +217,37 @@ idle ──cast──▶ waiting ──bite──▶ hooked(tier, deadline)
 | `audio.play` | 稀有鱼咬钩音效 | 默认关闭 |
 | `session.*`、`command.*` | 宿主探测、注册命令 | — |
 | 订阅的事件 | `session.start`、`turn.*`、`tool.call`、`tool.check`、`classic.Notification`、`classic.SessionStart`、`ui.render`（横条、面板，以及只观察不修改的 `AskUserQuestion`） | 只观察；除了横条和面板，不改写任何事件 |
-| `prompt.edit` 或 `ui.render(PromptHint)` | 读取提示框是否有草稿 | **取决于 OQ1 的结论**：只读 `isDraft`，不改写提示框，也不注入上下文。如果结论是检测不到，就把这一行和对应实现一起删掉 |
+| `ui.render(PromptHint)` | 读取提示框是否有草稿 | 只读 `isDraft`，原样 `next(e)` 透传，不改写提示框，也不注入上下文（T1 已验证；不使用 `prompt.edit`） |
 | `userConfig` | `testCommands`：用户追加的测试命令正则 | 通过 `register(on, options)` 传入，不需要额外 API 调用 |
 | **不使用** | `http`、`process`、`model`、`prompt.submit`、`env` | — |
 
 **CI 检查**：
 - 运行 `claude plugin validate --strict --json`，把调用清单和上表对比，出现表外的调用就失败。
 - 用 lint 规则限制 `fs.*` 只能出现在 `src/adapter/git.ts` 和 `src/adapter/export.ts` 两个文件里，并检查路径常量。
+
+## Verified platform facts（T1 探针，2026-10-07，Claude Code 2.1.292）
+
+以下结论来自实际运行的探针，原始日志见 [docs/probes/t1-probe-log.jsonl](../probes/t1-probe-log.jsonl)，探针源码见 `docs/probes/t1-probe/`。如果下面的结论和前文冲突，以这里为准。
+
+| # | 问题 | 结论 | 证据 |
+|---|---|---|---|
+| V1（OQ1） | 能不能检测到草稿 | **能。** `ui.render(PromptHint)` 的 `isDraft` 只在"有草稿"和"空"之间切换时重新渲染，每次切换会触发 2 次渲染，不会每敲一个键就渲染一次。Claude 空闲和工作中（`isWorking` 为 true）都会触发，延迟小于 10ms。prompt 建议文本不算草稿。**D-DRAFT 的 (a) 路径生效，D-FALLBACK 不需要了。** | 日志中的 MARK type-a、work-type-x、clear |
+| V2 | 数字热键 | 在空的提示框里单独按 `1`，大约 **400–415ms** 后触发横条按钮，Claude 空闲或工作中都一样。这段时间里 `isDraft` 会短暂变成 true，然后数字被吃掉。**已有草稿时按 `1` 不会触发。** 权限确认框打开期间，`1` 由确认框处理，不会触发横条按钮。 | press.digit 相对于 MARK empty-1 和 work-digit 的时间差 |
+| V3（OQ2） | 打字时组合键能不能触发 | **能。** 有草稿时按 `ctrl+x r`（绑定到无人处理的 `app:toggleDiffNoiseFilter`），大约 300ms 后触发了按钮的 `action`。前提是用户在 `keybindings.json` 里绑定了这个组合键。 | press.chord 相对于 MARK chord-in-draft 的时间差 |
+| V4（OQ6） | 权限确认在哪里等待 | `tool.call` 开始后约 9ms，在 `next(e)` **内部**触发 `tool.check` 并返回 `ask`，确认框随即弹出。用户批准后，`next(e)` 要等**工具执行完**才结束（批准后又过了 4.04s，正好是 `sleep 4` 的时长）。**多冻结的时长等于工具执行时间。** 另外，`classic.Notification(permission_prompt)` 在确认框弹出约 **6 秒后**才到达，用它判断太晚，这也证明了 D11 不用它是对的。 | tool.check(ask) → MARK approve → tool.call.settle |
+| V5（O3） | 10 秒预算 | 在 `next` 里等了 23.6 秒，hook 没有被跳过。**`next` 内部的等待不计入 10 秒预算。** | tool.call.enter 到 settle |
+| V6（A3） | 横条能不能用 blit | **能。** 用 `requestId` 等于 AbovePrompt 的 `e.requestId`、10 fps 的 `$.ui.blit` 刷新 Raster，结果中 `deny` 全部为 null。 | blit 日志 |
+| V7（C2） | 能不能 import JSON | **不能。** validator 只接受代码文件（.ts、.tsx、.js 等）。物种数据**改用 `src/data/species.ts`**，CI 用同一份 schema 校验。 | `claude plugin validate` 报错 |
+| V8（OQ9） | `keys()` 延迟 | 5,000 个键（每个约 300B）时 `keys()` 耗时 **3ms**，按前缀过滤的耗时接近 0。顺序 `set` 5,000 次共 **8.1s**（平均约 1.6ms 一次）。所以每次捕获写入一次没有问题，**但要避免在一个 hook 里批量写入**。 | keys 日志 |
+| V9 | 宿主探测 | 终端下 `$.session.surfaces()` 返回 `["terminal"]`。 | session.start 日志 |
+| V10 | store 文件位置 | 用 `--plugin-dir` 加载时，store 文件名是 `<name>_inline-<hash>.json`。**开发时加载的副本和从 marketplace 安装的版本用的是两个不同的 store 文件**，开发期间的存档不会带到正式安装版里。 | `~/.claude/plugins/store/` 目录列表 |
+| V11 | `.catch` 警告 | validator 会对 `tool.check`、`tool.call`、`classic.*` 中没有 `.catch` 的 hook 报 "gating hook without .catch" 警告。这和 A2 的要求一致：每个 hook 都要挂一个透传的 `.catch`。 | validate 输出 |
+
+**对设计的影响：**
+- D-DRAFT 采用 (a) 路径，D-FALLBACK 和 `v1:p:onboard.chord` **不需要了**。组合键作为进阶选项，只写在 README 里，不做首次引导的 toast。
+- 横条刷新采用 blit 方案，不用回退到 invalidate。
+- 物种数据放在 `src/data/species.ts`，不再用 `data/species.json`。
+- OQ1、OQ2、OQ4、OQ6（确认了多冻结时长就是工具执行时间，阶段 1 可以接受）、OQ7、OQ9 都已关闭。还开着的只有 OQ3 的体感问题：400ms 的数字热键延迟在 GIF 里看起来怎么样。
 
 ## Open Questions（需要原型验证）
 
@@ -390,7 +414,7 @@ Accepted scope:
 - **防刷**：稀有遭遇由三者共同决定：①有效的编程上下文，即主代理的回合正在进行，并且回合内有工具调用或模型请求；②遭遇预算；③随机数。单纯挂机、开多个会话、频繁刷新都不能稳定刷出稀有鱼。
 - **阶段 1 的实现约束**：
   - 概率、窗口长度、每日预算都放在 `src/core` 的一个参数对象里，默认值写在代码里、可以调整；实际数值等用一段时间后再定（并入 OQ10）。
-  - 预算以**全局、按天**计算：每次出现稀有遭遇，就只追加写入一条 `v1:e:<date>:<sessionId>:<seq>`。判断预算时，用 `keys()` 统计当天以 `v1:e:<date>:` 开头的键有几条。因为没有 CAS，两个会话几乎同时触发时**可能超出一次**；这是一个"软预算"，这一点写进文档，不靠加锁来解决（与 D1 一致）。
+  - 预算以**全局、按天**计算：每次出现稀有遭遇，就只追加写入一条 `v1:e:<date>:<sessionId>:<seq>`。判断预算时，用 `keys()` 统计当天以 `v1:e:<date>:` 开头的键有几条。因为没有 CAS，**并发会话越多，可能超出的次数越多，没有确定上界**（O4）；这是一个"软预算"，不做保证，也不靠加锁来解决（与 D1 一致）。
   - `keys()` 的耗时由探针测量；如果太慢，先把当天的计数缓存在会话内存里，只在 `turn.start` 时刷新一次。
 - **声音中立**：开启声音只会提高用户注意到咬钩的机会，不改变遭遇概率、稀有度和收杆规则。Sound UX Contract 中"忽略声音不得导致鱼丢失"一句改为："声音只是提醒，开启或忽略声音都不会让结果比静音时更差，也不会阻塞 Agent。"
 History: D9 的选项 A（声音不改变结果）和 B（稀有鱼在回合内不会跑）都没有被选，用户另写了选项 C。
