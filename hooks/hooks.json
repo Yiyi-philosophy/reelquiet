@@ -1,0 +1,4 @@
+{
+  "description": "ReelQuiet hooks module",
+  "modules": ["./register.ts"]
+}

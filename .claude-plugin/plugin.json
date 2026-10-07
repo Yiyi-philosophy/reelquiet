@@ -1,0 +1,6 @@
+{
+  "name": "reelquiet",
+  "version": "0.1.0",
+  "description": "ReelQuiet: a quiet fishing pond for the wait while your coding agent works. Real species, zero tokens, no file or network access. Not an official Anthropic product.",
+  "author": { "name": "ReelQuiet contributors" }
+}
