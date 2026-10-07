@@ -298,6 +298,361 @@ idle ──cast──▶ waiting ──bite──▶ hooked(tier, deadline)
 - 你没有全盘接受"永远不需要你"这个前提，而是坚持"高价值或稀有的鱼类，需要用户主动点击"。你在乎的是一点心跳感，而不是零交互。
 
 <!-- gstack:office-hours:concerns:start -->
+## Eng Review（/plan-eng-review，2026-10-07）
+
+### Scope record
+
+- **功能取舍的回答**：
+  - D1：存储推迟到阶段 2。阶段 1 只做只追加的持久化，所有键带 `v1:` 前缀并写入显式的 `schema_version`。2,000 条只是保守的安全上限，不代表 4 MiB 容量够用；阶段 1 不承诺长期规模。R3-1 到 R3-6 标为 **DEFERRED_TO_STAGE_2**。重开条件：拿到 `keys()` 的实测延迟、真实的单条记录大小和数量之后再设计；而且新方案**不得依赖 CAS 或原子租约**，因为 `$.store` 只有 get、set、delete、keys 四个操作。
+  - D2：鱼饵的数值、库存、获取和消耗规则全部推迟到阶段 2（R3-13 并入 OQ10，用一周后再评审）。**现在冻结鱼饵的语义契约**：鱼饵主要影响咬钩机会、可出现的物种池和栖息地条件，而不是简单乘一个稀有度倍数。设计思路参考《动物森友会》，长期内容来源是现实中鱼饵和真实物种的对应关系。阶段 1 不显示鱼饵、没有库存、GIF 里也不出现；`loot.ts` 只保留一个可选参数 `bait = none`。奖励表删掉"改动极小的提交不计"，改为"同一个 hash 或 amend 只奖励一次"（R3-7 关闭）。
+  - D3：阶段 1 只支持终端。其他宿主一律整体停用、不输出任何内容。D-DESKTOP、R3-9、R3-12、OQ5、OQ8 标为 **DEFERRED_TO_STAGE_2**。（用户更正了一次误选）
+- **结构**：D4 选择 Smaller arrangement，Original arrangement 已删除，原因是官方 validator 证明它不可行。
+  - `hooks/register.ts` 是**唯一的能力边界**。所有 `$` API 调用、store 读写、定时器、hook 注册和真实副作用都放在这个文件里。文件预计 300 到 400 行，用文件内分节和同文件的顶层辅助函数来组织，不为了拆文件而增加间接的 adapter 层。
+  - `src/core/**` 只写纯函数，只处理普通数据。
+  - `src/render/**` 不能接触 `$`。首选做法是返回与宿主无关的 RenderModel（普通数据），由 `register.ts` 转换成实际的 UI 元素。只有在 RenderModel 实现成本过高时，才退而改为接收 resolve 之后的元素构造器。
+- **接受的范围**：阶段 1 包含以下内容：
+  - 核心循环：抛竿、等待、咬钩（普通鱼自动收杆，稀有档手动收杆）、带回下一轮、目击
+  - 冻结和解冻、中断处理、重置
+  - 终端横条，以及捕获卡片
+  - 只追加的 `v1:` 存储
+  - 只在终端运行
+  - 2 种物种
+- **待定的修正项**：F1、F2、R3-8、R3-10、R3-11，以及物种 schema 里的 `bait_affinity`。
+
+### 事实修正（不改变行为，无需提问）
+
+- **F3**：`PromptHint.isDraft: boolean`，文档说明是"True while the prompt holds typed text. Read-only."，只在终端可用（claude-code.d.ts:8257）。因此 D-DRAFT 的 (a) 路径定为主路径；权限清单删掉 `prompt.edit`，只保留只读的 `ui.render(PromptHint)`。**用户打字时这个值会不会逐字符刷新，仍需探针确认。**
+- **F4**：`$.store` 的定义是"A JSON file of the plugin's own"，4 MiB 按插件单独计算；只提供 get、set、delete、keys，没有 CAS（d.ts:2857-2880）。OQ9 的容量部分关闭，`keys()` 耗时那部分保留。
+- **F5**：`exitCode` 只出现在 `ProcessRunResult` 里，Bash 工具的结果只有 `isError`（d.ts:6531、5043）。设计本来就按 `isError` 判断，OQ4 关闭。
+- **R3-11**：根据 D3 阶段 1 只支持终端，所以前提 1、D-REEL、D-SIGHT 在阶段 1 统一加上"仅限终端"，阶段 1 中不再与 D-DESKTOP 冲突。
+
+## Decision ledger
+
+### F2：插件名会导致 validate 失败
+Finding: F2，P1，置信度 9/10，来源 create.md "Share your mod"，评审者为 Claude。设计文档 `.claude-plugin/plugin.json` 里的 `name` 默认是 `claude-fish`。
+Plan baseline: 前提 4 写的是"发布前必须改名"，第一次 validate 的时间点没有考虑进去。
+Runtime evidence: 官方文档原文是 "`claude plugin validate` fails a name that looks like one of Anthropic's own, such as one that starts with `claude-`"。没有实际跑过 validate 验证。
+Comparison grid:
+| 选择 | 当前 | A | B |
+|---|---|---|---|
+| plugin.json 的 name | claude-fish（validate 会失败） | 现在先用一个中性的工作代号，正式品牌名到 /plan-ceo-review 再定 | 本次评审直接定下最终名字 |
+| 发布前改名（前提 4） | 已批准 | 仍然保留：发布前确定最终名字 | 本次就已完成 |
+
+Question D5: 见下方提问（与 AskUserQuestion 内容一致）
+Header: 插件命名
+Options:
+A) 先用工作代号 (recommended)
+B) 现在定最终名
+
+State: approved
+Actual answer: B) 现在定最终名（D5）；名字为 ReelQuiet（D6，用户在 Other 里自填）
+Accepted scope: 产品显示名是 **ReelQuiet**；`plugin.json` 里的 `name` 字段写 `reelquiet`（小写 kebab-case 标识符）。README、marketplace 和界面上都用 ReelQuiet。改名会换掉 `$.store` 文件，所以这个名字从阶段 1 起视为永久，不再更改。前提 4 中的"发布前改名"视为本次已完成；"非官方免责声明"仍然保留。OQ7 关闭。
+History: —
+
+### F1：CI 里 `fs.*` 的 lint 规则指向不存在的目录
+Finding: F1，P1，置信度 9/10，设计文档"CI 检查"中写着"`fs.*` 只能出现在 `src/adapter/git.ts` 和 `src/adapter/export.ts`"。评审者为 Claude。
+Plan baseline: 文件白名单基于 src/adapter 分层，D4 已经把这种分层删掉了。
+Runtime evidence: 目前没有任何代码。按 D4 的约定，所有 `$` 调用都只能写在 `hooks/register.ts` 里。
+Comparison grid:
+| 选择 | 当前 | A | B |
+|---|---|---|---|
+| 阶段 1 的权限面 | 权限清单列出了 fs.stat、fs.read（reflog）和 fs.write（export） | 阶段 1 **一次 fs.* 调用都没有**。reflog 只给奖励用，而奖励放在阶段 2a；export 本来就是阶段 2 的功能。CI 用 validate 的 `--json` 输出检查，出现任何 `fs.` 调用就失败 | 阶段 1 先把 fs.read 读 reflog 写上，用于工作记忆文案里的"刚提交了 X"；CI 检查路径常量 |
+| CI 的结构性规则 | fs.* 只能出现在 adapter 下的两个文件里 | `$` 只能出现在 `hooks/register.ts`；`src/**` 里一个 `$` 都不能出现（grep 检查 + validate） | 同 A |
+Question D7: 见提问
+Header: 阶段1权限面
+Options:
+A) 阶段 1 零文件访问 (recommended)
+B) 阶段 1 就读 reflog
+
+State: approved
+Actual answer: A) 阶段 1 零文件访问（D7）
+Accepted scope: 阶段 1 不调用任何 `fs.*`，也不使用 http、process、model。reflog 的读取和它的各种边界处理整体移到阶段 2a。CI 规则一：`claude plugin validate --strict --json` 输出的调用清单里只要出现 `fs.`、`http.`、`process.`、`model.` 或 `prompt.submit` 就失败。CI 规则二：`src/**` 中不允许出现任何 `$` 调用，用 grep 检查。工作记忆的文案只使用事件里已有的信息：修改过的文件名、测试由红转绿、时间、仓库名。README 写明：不读写你的文件、不联网、不启动进程、不调用模型。
+History: —
+
+### R3-10：偏好和一次性标记 / 音效
+State: approved
+Actual answer: 推迟到阶段 2（D8），并由用户补充冻结 Sound UX Contract
+Accepted scope: 阶段 1 的偏好和一次性标记统一使用 `v1:p:<name>` 键，不参与压缩。阶段 1 唯一可能用到的标记是 `v1:p:onboard.chord`，只有走 D-FALLBACK 路径时才会写入。阶段 1 不做音效：validate 的输出中不能出现 `audio.play`，没有声音相关的配置，也没有 `onboard.sound`。R3-10 在阶段 1 关闭。
+History: D8 的推荐选项原本写的是"阶段 2 通过 userConfig.sound 开启"；用户补充后改为"命令或开关 + v1:p:sound.enabled"，并取消首次 toast。
+**Sound UX Contract（现在冻结，阶段 2 实现）：**
+  - 音效永远是用户主动开启、默认关闭。安装、升级、切换项目都不能自动发出声音。
+  - 用户可以用一条简单命令或一个开关来开关声音，不需要手动改配置文件。具体入口等平台 API 确认后再定。偏好持久化在 `v1:p:sound.enabled`。（这一条替代了之前写的 `userConfig.sound`，见 History）
+  - 声音只用来增强可选的钓鱼互动，比如稀有鱼咬钩时给一个轻提示。声音只是提醒，开启或忽略声音都不会让结果比静音时更差，也不会阻塞 Agent（D9 修正了措辞；普通鱼兜底靠自动收杆，回合结束时靠 D-CARRY）。
+  - 不做"第一次钓到稀有鱼时推销声音功能"的 toast。只在 README 和 help 里说明默认静音以及如何开启。
+  - 音频素材、声音类型和具体交互，到阶段 2 再评审。
+
+### D9：遭遇模型（Sparse Active Encounters）
+State: approved
+Actual answer: C) Sparse Active Encounters（用户自定义选项，包含了 A 的规则，并增加了频率和防刷约束）
+Accepted scope:
+- ReelQuiet 的目标是让打扰**极低频、高价值**，而不是做到零打扰。common 和大部分普通捕获不需要用户操作；rare 及以上有一个有限的主动收杆窗口，超时就逃走，并写入一条 sighting（D-SIGHT、D-CARRY 不变）。
+- **频率目标**：正常一天编程下来，真正需要用户注意的稀有遭遇大约 0 到 2 次。
+- **防刷**：稀有遭遇由三者共同决定：①有效的编程上下文，即主代理的回合正在进行，并且回合内有工具调用或模型请求；②遭遇预算；③随机数。单纯挂机、开多个会话、频繁刷新都不能稳定刷出稀有鱼。
+- **阶段 1 的实现约束**：
+  - 概率、窗口长度、每日预算都放在 `src/core` 的一个参数对象里，默认值写在代码里、可以调整；实际数值等用一段时间后再定（并入 OQ10）。
+  - 预算以**全局、按天**计算：每次出现稀有遭遇，就只追加写入一条 `v1:e:<date>:<sessionId>:<seq>`。判断预算时，用 `keys()` 统计当天以 `v1:e:<date>:` 开头的键有几条。因为没有 CAS，两个会话几乎同时触发时**可能超出一次**；这是一个"软预算"，这一点写进文档，不靠加锁来解决（与 D1 一致）。
+  - `keys()` 的耗时由探针测量；如果太慢，先把当天的计数缓存在会话内存里，只在 `turn.start` 时刷新一次。
+- **声音中立**：开启声音只会提高用户注意到咬钩的机会，不改变遭遇概率、稀有度和收杆规则。Sound UX Contract 中"忽略声音不得导致鱼丢失"一句改为："声音只是提醒，开启或忽略声音都不会让结果比静音时更差，也不会阻塞 Agent。"
+History: D9 的选项 A（声音不改变结果）和 B（稀有鱼在回合内不会跑）都没有被选，用户另写了选项 C。
+
+### D10：物种 schema 增加 diet 字段（只记录生物学事实）
+State: approved
+Actual answer: 现在加 diet 字段（D10），用户追加了"只记录生物学事实"的冻结约束
+Accepted scope: `data/species.json` 的 v1 schema 增加一个可选字段：
+```
+diet?: {
+  tags: DietTag[]          // 受控词表，例如 small-crustaceans、insects、plankton、small-fish、algae、detritus
+  source_refs: string[]    // 至少 1 条，必须是 Wikidata 或自行撰写说明的来源
+  note?: string            // 可选，简短的事实性备注
+}
+```
+- **禁止字段**：bait 名称、affinity、概率、rarity multiplier，以及任何其他游戏数值。CI 会对 species.json 做 schema 校验，出现这些字段就报错。
+- **缺失和空的含义不同**：没有 `diet` 字段，表示这个物种的食性还没整理。不能用 `tags: []` 来表示"未知"，所以 schema 要求 `tags` 至少有 1 项。
+- 阶段 1 不区分生命阶段、季节或地域带来的食性差异。确实需要时，再通过升级 `schema_version` 加进来。
+- 鱼饵如何对应到 diet 或栖息地，由阶段 2 定义。
+- 阶段 1 的 2 个物种要尽量填写 diet；查不到可靠来源的，就不写这个字段。
+
+### R3-8、R3-11：已由 D3 消解（事实记录）
+- R3-11：阶段 1 只支持终端（D3），所以不存在 Desktop 自动收杆这条分支，前提 1 / D-REEL / D-SIGHT 在阶段 1 不再自相矛盾。
+- R3-8：阶段 1 没有"稀有档自动收杆"这条路径，所以"稀有加成"这个概念在阶段 1 用不上。等 D-DESKTOP 在阶段 2 重新打开时，再一起定义。标记为 **DEFERRED_TO_STAGE_2**。
+
+### Section 1 架构评审
+
+**A1 / D11：冻结和解冻的机制**
+State: approved
+Actual answer: A) 包装每次调用（D11），用户修正了"精确解冻"这一结论
+Accepted scope:
+- **确定边界**：
+  - `AskUserQuestion`：从它的 `tool.call` 进入，到 `next(e)` 结束为止，整段冻结。
+  - MCP elicitation：从 `classic.Elicitation` 开始冻结，到 `classic.ElicitationResult` 解冻。
+- **权限确认（ask）的保守冻结范围**：
+  - `tool.check` 返回 `ask` 时，给这次调用打上标记。
+  - 从这次调用的 `tool.call` 开始，到 `next(e)` 结束为止，都视为冻结；在 `finally` 里释放。
+  - 文档说明 `next(e)` 包含权限等待，**可能也包含之后的工具执行**。所以在探针确认之前，**不能说"用户批准或拒绝的那一刻就会解冻"**。
+  - 如果批准后还要等工具执行完才解冻，阶段 1 接受少量多冻结一会儿（over-freeze）。阶段 2 再去找更细的"权限已处理"信号。
+- **实现方式**：用一个带标识的集合 `activeFreezes: Set<string>` 记录当前的冻结来源，元素是 tool call id，或 `elicitation:<id>`。集合不为空就处于冻结状态。不用裸计数器。
+  - `turn.start` 只作为异常兜底：清掉残留的冻结记录，并写一条调试日志。complete、abort、reset 正常情况下也要清空这个集合。
+- 不再用 `classic.Notification` 触发冻结。原事件映射表中"冻结期间又出现 tool.call 或 turn.step → unfreeze"这一行废止。
+- **OQ6 范围缩小，但仍然开放**：探针要测出权限框是在 `next(e)` 里的哪一段等待的，以及批准之后、工具执行完之前还要等多久（over-freeze 的时长）。
+History: D11 的推荐选项原本写着"精确解冻、OQ6 基本关闭、pendingWaits 计数器"；用户更正为"保守冻结范围 + 允许 over-freeze + 带标识的集合 + OQ6 缩小但不关闭"。
+
+**A2：出错时放行（已批准约束"不阻塞 Agent"的必要实现，不需单独提问）**
+Accepted scope:
+- 每个 hook 只观察：先调用 `next(e)`，原样返回 `next` 的结果。游戏逻辑一律包在 try/catch 里，失败时只往调试日志写一条。
+- 每个 hook 都挂上 `.catch`，在 1 秒预算内只做透传（`return next.called ? undefined : next(e)` 的等价写法），保证 mod 出故障时 Claude 的工具调用和回合完全不受影响。
+- 横条和面板渲染失败时，返回 `next(e)`，不显示任何东西。
+- 测试必须覆盖：游戏逻辑抛异常时，工具结果保持不变。
+
+**A3：确认 blit 能否用于横条（验证项）**
+加入探针清单：`$.ui.blit` 能否作用于 `AbovePrompt` 中的 Raster。如果不能，退回到每秒 10 次的 `$.ui.invalidate('ui.render')`。
+
+### Section 2 代码质量评审
+
+**C1 / D12：工作记忆的隐私分级（allowlist 投影）**
+State: approved
+Actual answer: A) 本地完整，卡片脱敏（D12），用户收紧了数据边界
+Accepted scope:
+- **本地 `CatchRecord`（v1）只能存 allowlist 里的字段**：
+  - `schema_version`
+  - 物种 id、体长、稀有度
+  - 时间
+  - 通用事件类型（受控枚举：`tests-green`、`edit`、`turn-complete` 等）
+  - repo name
+  - 有限个文件 basename（最多 3 个，每个最多 64 个字符）
+- **绝不保存**：完整路径、命令原文、tool arguments、prompt 或对话内容、stdout/stderr、环境变量，以及任何其他自由文本。
+- 判断测试由红转绿用的命令指纹**只放在会话内存（`$.state`）里，不写进 `$.store`**。
+- **`PublicCatchCard` 是一个独立的 schema**。它由一个纯函数 `toPublicCard(record)` 从本地记录生成：**只投影 allowlist 里的字段**，即物种、体长、稀有度、日期、通用事件描述。投影只挑需要的字段，**不是在本地记录上做删减**。分享卡片的 renderer 只接收 `PublicCatchCard`，类型上拿不到 repo、file 等字段，**也不依赖运行时脱敏（redact）**。
+- **CI**：
+  - schema 测试：`PublicCatchCard` 的 schema 只允许列出的字段（`additionalProperties: false`）。
+  - fixture 测试：用一条带 repo、file、path、token 样式字符串的 `CatchRecord` 做投影，断言输出里不含 repo、file、path、command、prompt 这些字段名，也不含它们的值。
+  - `CatchRecord` 的 schema 同样设置 `additionalProperties: false`。
+- **GIF**：可以用人工构造的公开演示数据（演示仓库、演示文件名）。真实用户默认生成的分享卡片永远是脱敏后的版本。
+History: 推荐选项原本写的是"保存哈希后的命令指纹"；用户收紧为：指纹只放在会话内存里，并用 allowlist 投影来生成卡片。
+
+**C2：物种数据的加载方式（验证项，数据契约不变）**
+在零文件访问的前提下，`data/species.json` 只能通过 import 引入。加一个探针，验证 hooks module 能不能直接 import `.json`。如果不能，改为 `src/data/species.ts`，导出同一 schema 的常量，CI 用同一份 schema 校验。D10 的 biology-only 契约保持不变。
+
+**C3**：静态校验相关的约束已经由 D4 和 D7 覆盖，不再单独列项。
+
+### Section 3 测试评审
+
+测试框架：`claude plugin test`，测试代码使用 `claude-code/testing`，可以模拟触发事件、按钮点击和 store。目前没有任何代码，下表全部是阶段 1 **必须实现**的测试。它们都来自已批准的契约，不是可选项。
+
+```
+CODE PATHS（阶段 1）                                      USER FLOWS
+[+] src/core/pond.ts（纯函数状态机）                       [+] 核心循环（GIF 流程）
+  ├── cast / waiting / bite                    [GAP]       ├── [GAP][→E2E] 提交任务→抛竿→咬钩→按 1→卡片→完成
+  ├── common 自动收杆                           [GAP]       ├── [GAP] 正在打字时稀有鱼咬钩（isDraft 暂停）
+  ├── rare/legendary 超时 → sighting            [GAP]       ├── [GAP] 离开终端，回合结束后回来收杆（carried）
+  ├── complete：hooked(rare) → carried          [GAP]       └── [GAP] 权限确认期间咬钩冻结，处理后恢复
+  ├── carried 不超时、定时器停止；下一次 cast → sighting [GAP]
+  ├── abort：不发奖励，rare → sighting          [GAP]     [+] 出错与边界
+  ├── reset（clear/resume/fork）                [GAP]       ├── [GAP] 游戏逻辑抛异常时，工具结果原样返回（A2）
+  └── activeFreezes：加入/移除/finally/兜底清理 [GAP]       ├── [GAP] 非终端宿主：零输出、零注册
+[+] src/core/clock.ts：按注入的 now 推进；冻结时不推进 [GAP]       ├── [GAP] 达到 2,000 条上限后 common 不再写入
+[+] src/core/loot.ts                                       ├── [GAP] $.store.set 被拒绝：降级为仅内存，提示一次
+  ├── 固定种子下结果确定                        [GAP]       └── [GAP] 横条按钮只在 hooked(≥rare)/carried 且未冻结时存在
+  ├── bait=none 是唯一合法值（阶段 1）          [GAP]
+  └── 遭遇预算：当天达到上限后不再出 rare；可能超一次的软上限语义 [GAP]
+[+] src/core/signals.ts
+  ├── 测试命令匹配（内置正则 + userConfig）     [GAP]
+  ├── 红→绿只触发一次，指纹只存在于 $.state     [GAP]
+  └── 子代理的 tool.call 产生 signal，但不抛竿  [GAP]
+[+] src/core/records.ts
+  ├── v1: 键格式与 schema_version               [GAP]
+  ├── CatchRecord allowlist（additionalProperties:false） [GAP]
+  └── toPublicCard 投影：不泄露 repo/file/path/command/prompt [GAP] ★ CI 门禁
+[+] src/render/{band,card}.ts → RenderModel（普通数据快照） [GAP]
+[+] hooks/register.ts（集成）
+  ├── tool.check=ask → 冻结；next(e) settle → finally 解冻 [GAP]
+  ├── AskUserQuestion 全程冻结；Elicitation / Result 冻结与解冻 [GAP]
+  ├── 热重载后从 $.state 恢复状态，并重建定时器 [GAP]
+  └── 长时间纯推理（没有工具调用）时时间照常推进 [GAP]
+[+] CI 门禁
+  ├── validate --json：不出现 fs./http./process./model./audio./prompt.submit [GAP]
+  ├── src/** 中不出现 $                         [GAP]
+  └── species schema：只记录生物学事实，diet.tags 至少 1 项，禁止游戏数值字段 [GAP]
+
+COVERAGE: 0/38（还没写代码）| 需要 E2E：1 条（GIF 流程，用探针加手动录制）| 需要 EVAL：0（零模型调用）
+```
+
+**回归风险**：仓库里还没有任何代码，不存在要保护的已有行为，因此本轮没有回归契约。
+**探针（OQ 汇总）**：
+  - isDraft 是否在打字时实时刷新
+  - 组合键 action 按钮在打字时能否触发
+  - 数字热键需要停顿多久才触发
+  - 权限框是否在 `next(e)` 里面等待，以及会多冻结多久（OQ6）
+  - blit 能否用于横条（A3）
+  - JSON 能否直接 import（C2）
+  - `keys()` 的耗时
+
+### Outside Voice（Codex gpt-6-astra，completed）
+
+**O1：.catch 返回 undefined 会改变工具结果（事实修正，P1）**
+这是同一条已批准契约（A2"原样返回 next 结果"）的实现写错了。修正后的写法：hook 中先执行 `const r = await next(e)`，游戏逻辑放进 try/catch，最后一律 `return r`。`.catch` 只处理 `next.called === false` 的情况，此时返回 `next(e)`。如果 hook 卡住不返回，由平台的 10 秒上限把它跳过，这本身就是"出错时放行"。测试补充一条："`next` 之后游戏逻辑抛异常，工具结果仍然完全相同。"
+
+**O3：10 秒上限是否包含权限等待（事实修正）**
+不包含。文档原文写的是"not counting time inside `next` or a mods API call other than `$.clock.sleep`"。设计文档 Constraints 里那句"单个 hook 最多执行 10 秒"应补上"不含 `next` 内的等待时间"。另外把"长时间的权限等待不会让 hook 被跳过"加进探针清单，做一次确认。
+
+**O4：遭遇预算的上界说法不对（事实修正）**
+没有原子操作，N 个会话同时运行时，超出上限的次数可以达到 N−1，再叠加每回合缓存，超出的次数**没有确定上界**。所以预算只是一个**软目标**，不提供任何保证。测试改为断言"单个会话内不会超出"，删除原来"最多超出一次"的断言。D9 中"可能超出一次"的说法同步改为"并发会话越多，超出越多，不做保证"。
+
+**O2 / D13：提前写好草稿的用户遇到 carried 稀有鱼**
+State: approved
+Actual answer: D) Draft-aware grace window（用户自定义选项，替代推荐的 A）
+Accepted scope:
+- **核心原则**：稀有鱼的机会窗口仍然有限，但**只在"收杆"这个操作真正可用时才计时**。可用的条件是：提示框为空，并且没有处于冻结状态。
+- **回合结束时**，如果有稀有档鱼正在咬钩：
+  - 提示框为空：进入 `carried`，开始倒计时 `carryGraceMs`。
+  - 提示框有草稿：进入 `carried`，状态标为 draft-blocked，**不会结算成目击，也不计时**。
+- **用户清空或发送草稿之后**，收杆重新可用，这时开始一个固定的 `postSubmitGraceMs`。阶段 1 的默认值是 45 秒（建议范围 30 到 60 秒），可以调整，最终值并入 OQ10。这段时间过完还没收杆，才转为 sighting。阶段 1 不实现"恢复剩余窗口"这种方式，统一用固定宽限期。
+- **一次只能有一条未解决的稀有遭遇**。`carried` 没解决之前，暂停所有新的钓鱼遭遇，包括不再抛新的一竿；新回合开始时，横条先只显示这条挂着的鱼。等它解决了（收杆，或超时变成目击），新回合的这一竿才抛出。不允许"旧的稀有鱼还挂着，同时又钓新鱼"。
+- 宽限期内定时器照常运行，冻结时（等待权限确认或回答问题）一样暂停计时。
+- **横条提示可以如实写成**："Send your draft, then reel it in."
+- **废止的规则**：D-CARRY 中"用户提交下一条 prompt 时还没收杆，就结算为目击"，以及事件表中"turn.start：如果当前是 carried，先把它结算为目击"。
+- **测试补充**：
+  - draft-blocked 期间不计时
+  - 发送草稿后开始宽限期
+  - 宽限期超时后变成 sighting
+  - carried 期间不会出现新的咬钩
+  - 冻结期间宽限期暂停
+History: 推荐的选项 A 是"carried 一直持续到下一个回合结束，同时允许抛新的一竿"；用户改为宽限期方案，并且不允许同时钓新鱼。
+
+**O5 / D14：阶段 1 加一个最小的 `/reelquiet log`（用来验证产品假设的探针）**
+State: approved
+Actual answer: A) 加最小 /reelquiet log（D14），用户补充了范围上的限制
+Accepted scope:
+- **定位**：这是一个验证产品假设的探针，**不是正式的图鉴功能**。界面上的标题叫 **"Recent memories"**，不要把 "log" 当成长期的产品概念来用。阶段 1 自用一段时间后，再决定要不要发展成 Journal 或 FishDex。
+- **功能固定为**：只读，按时间倒序显示最近 20 条 `CatchRecord` 和 Sighting。**不支持**参数、分页、搜索、筛选、删除、导出。
+- **实现方式**：用 `immediate: true` 注册，通过 `$.ui.log` 输出，命令返回 `{}`。这样输出不会进入 Claude 的上下文，也不需要新增任何权限。
+- **显示字段**：遵循 D12 规定的本地记忆字段白名单，只包括：species、size、rarity、caught 或 sighted、timestamp、通用化的事件描述、repo name、file basename。**任何情况下都不显示**自由文本、完整路径或命令。
+- **测试**：
+  - 返回值是 `{}`
+  - 最多显示 20 条，并且按时间倒序
+  - 输出中不出现白名单以外的字段
+  - 没有记录时，显示一行空状态提示
+- **目的**：一周自用要同时验证两件事：钓鱼本身好不好玩，以及工作日记有没有价值。
+
+**D15：TODOS.md 作为推迟事项索引**
+State: approved
+Actual answer: A) 写入 TODOS.md（D15），用户把它定义为"索引"
+Accepted scope:
+- `TODOS.md` 只是推迟事项的索引，每一项只列 ID、范围、状态、重开前提、不可违反的约束、来源引用。详细理由仍以本文档为唯一依据。
+- Gate：Stage 1 完成，必要的探针做完，至少自用一周。满足之后状态只变成 READY_FOR_REVIEW，不会自动开始实现；Stage 2 必须重新做一次 scope review，对每一项给出 IMPLEMENT、MODIFY 或 DROP 的结论。
+
+### Section 4 性能评审
+
+- **P1（P3 级，已通过现有决策解决）**：10 fps 的模拟加 blit 局部重绘，开销很小。唯一的例外是：在 blit 无法用于横条的情况下（A3），会退回到每秒 10 次的 `invalidate`，触发整棵 `ui.render` 树重算。按设计，横条树规模控制在 3 行以内，所以可以接受。
+- **P2（P3 级）**：每次遭遇判断都要调用 `keys()` 统计当天预算，开销取决于键的总数。D9 已经定了缓存方式：每个回合开始时（`turn.start`）只扫描一次，计数结果放在会话内存里。由于阶段 1 有 2,000 条的上限，键的数量是有界的。
+- 没有发现新的需要决策的问题。
+
+### Approval readiness
+Approval readiness: PASS。已核对的决策：D1（存储推迟）、D2（鱼饵契约）、D3（只支持终端）、D4（结构）、D5/D6（命名为 ReelQuiet）、D7（零文件访问）、D8（Sound UX Contract）、D9（Sparse Active Encounters）、D10（diet 只记录生物学事实）、D11（冻结机制修正版）、D12（allowlist 投影）、D13（草稿感知的宽限期）、D14（Recent memories 探针）、D15（TODOS 索引）。O1、O3、O4 属于事实修正，F3、F4、F5 也是，均已记录。A2 是已批准约束"不阻塞 Agent"的必要实现。
+
+### NOT in scope（阶段 1）
+- 存储压缩、租约、汇总、长期保留：等拿到 `keys()` 的实测数据后再做。
+- 鱼饵、奖励数值、reflog 读取、导出：要先有自用数据，并且不能破坏"零文件访问"这个卖点。
+- Desktop、右侧面板、声音：GIF 里用不到，而且依赖的平台 API 还没确认。
+- Journal/FishDex：先看 Recent memories 这个探针的反馈。
+- Codex 适配器：v0.1 不提前做。
+
+### What already exists
+- 官方示例 `token-weather`：提供横条渲染、Raster 和热重载的写法，**作为参考，不复制**。
+- 官方测试工具 `claude-code/testing`：用来模拟触发事件、按钮点击和 store。
+- `claude plugin validate --json`：用来证明权限面（CI 门禁直接调用它）。
+- `PromptHint.isDraft`：平台自带的草稿检测，不需要自己实现。
+
+### Failure modes（阶段 1）
+| 路径 | 实际可能的失败 | 有测试吗 | 有错误处理吗 | 用户能看到吗 |
+|---|---|---|---|---|
+| tool.call 包装 | 游戏逻辑抛异常 | 有（O1） | 先执行 `r = await next`，出错也返回 `r` | 看不到，Agent 不受影响 |
+| 冻结 | 有冻结记录没有被释放 | 有 | 在 `finally` 里释放，`turn.start` 兜底清理并写日志 | 看不到，最迟到下一个回合恢复 |
+| `$.store.set` | 写入被拒绝（达到 4 MiB 或其他错误） | 有 | 降级为只存在内存里，toast 提示一次 | 能看到 |
+| isDraft 探针失败 | 草稿检测不可用 | 两套验收路径 | 走 D-FALLBACK | 能看到引导 |
+| 非终端宿主 | 渲染不可用 | 有 | 完全静默 | 看不到（README 中说明） |
+| 分享卡片泄露 | 混入 repo 或 path | 有（CI fixture 测试） | allowlist 投影，类型上就拿不到这些字段 | 不会泄露 |
+
+**严重缺口：0**（没有一条路径同时满足"没有测试、没有错误处理、而且出错时用户毫无察觉"）。
+
+### Worktree parallelization strategy
+| 步骤 | 涉及模块 | 依赖 |
+|---|---|---|
+| S0 探针 | 临时探针 mod（不进主分支） | — |
+| S1 core | src/core | — |
+| S2 render | src/render | S1 的类型 |
+| S3 register | hooks/ | S1、S2、S0 的结论 |
+| S4 CI | .github/、scripts | S3 |
+
+并行通道：通道 A 做 S0（探针），通道 B 做 S1，然后 S2。两条都完成并合并后，再做 S3，最后做 S4。冲突点：S3 依赖 S0 的结论（是否走 D-FALLBACK、blit 能否用于横条、JSON 能否 import），所以必须在 S0、S1、S2 都完成之后才能开始。
+
+## Implementation Tasks
+以下任务都来自本次评审的发现，每一项都能对应到具体的发现。用 Claude Code 或 Codex 执行，完成一项勾一项。
+
+- [ ] **T1（P1，人工约 2h / CC 约 20min）**：探针 mod，测量以下几项：isDraft 何时刷新、组合键能否触发、数字热键的停顿时长、权限等待在 `next(e)` 中的位置以及多冻结的时长、blit 能否用于横条、JSON 能否 import、`keys()` 的延迟。
+  - 来源：F3、A3、C2、D11、D9、O3
+  - 文件：临时目录，不进主分支；结论写进设计文档的 OQ 一节
+  - 验证：每个问题都有实测结论
+- [ ] **T2（P1，约 5min / 约 1min）**：创建 `.claude-plugin/plugin.json`，`name` 写 `reelquiet`，并加上非官方声明。
+  - 来源：F2、D5/D6
+  - 验证：`claude plugin validate .` 通过
+- [ ] **T3（P1，约 1d / 约 1h）**：`src/core`，包括 pond（含 carried、draft-blocked、宽限期、同时最多一条未解决的稀有鱼、`activeFreezes`）、clock、rng、loot（带 `bait=none` 和遭遇预算参数）、signals、records（`v1:` 键、`CatchRecord` 白名单、`toPublicCard`）。
+  - 来源：D1、D2、D9、D11、D12、D13
+  - 验证：`claude plugin test`
+- [ ] **T4（P1，约 4h / 约 30min）**：`src/render`，横条和卡片都输出 RenderModel（普通数据）。
+  - 来源：D4
+  - 验证：快照测试
+- [ ] **T5（P1，约 1d / 约 1h）**：`hooks/register.ts`，实现事件映射、出错时放行（先 `r = await next`，最后返回 `r`）、宿主探测、`$.store`、`/reelquiet log`（Recent memories）。
+  - 来源：D3、A2、O1、D14
+  - 验证：集成测试，加一次手动录制 GIF
+- [ ] **T6（P1，约 2h / 约 15min）**：`data/species.json`（或 `.ts`），收录 2 个物种，并按 D10 的规则做 schema 校验。
+  - 来源：D10、C2
+  - 验证：CI 的 schema 测试
+- [ ] **T7（P1，约 2h / 约 15min）**：CI 检查以下几项：`validate --json` 中不出现 `fs`、`http`、`process`、`model`、`audio`、`prompt.submit`；`src/**` 中没有 `$`；`PublicCatchCard` 的 fixture 测试；species schema 测试；`claude plugin test`。
+  - 来源：D7、D12、D10
+  - 验证：CI 通过
+- [ ] **T8（P2，约 15min / 约 3min）**：设计文档事实修正：Constraints 中的 10 秒限制要写明"不包括 `next` 里的等待"；D9 的预算改为"软目标，并发时超额次数没有上界"；删除 `prompt.edit`；关闭 OQ4、OQ7、OQ9 中关于容量的部分。
+  - 来源：O3、O4、F3–F5
+
 ## Reviewer Concerns
 
 Disposition: CONCERNS_RECORDED
@@ -434,3 +789,33 @@ Stop: MAX_ITERATIONS
 
 > 定义鱼饵的消耗时机与数量、金色与普通鱼饵对 `loot.ts` 的具体影响（例如对稀有档权重的倍数）、库存上限与失效提示，并把这些写进阶段 2a 的验收标准，或明确标为随 OQ10 一起待定的参数。
 <!-- gstack:office-hours:concerns:end -->
+
+### Completion summary
+- Step 0：Scope Challenge 的结论是**按建议缩小范围**（存储、鱼饵、Desktop、声音推迟；结构换成更小的方案）
+- 架构评审：发现 3 个问题（A1 冻结机制、A2 出错时放行、A3 blit 验证项）
+- 代码质量评审：发现 3 个问题（C1 隐私分级、C2 JSON import 验证项、C3 已被已有决策覆盖）
+- 测试评审：已产出覆盖图，共 38 处缺口（尚未写代码），其中 1 条需要做成 E2E 测试
+- 性能评审：发现 2 个 P3 级问题，均已被已有决策解决
+- NOT in scope：已写
+- What already exists：已写
+- TODOS.md：提出 1 项（Stage 2 Engineering Review 索引），已采纳
+- Failure modes：严重缺口 0 个
+- 未解决的决策：本次评审 0 个
+- Outside voice：codex（gpt-6-astra），已完成，提出 5 条；其中 3 条按事实修正处理，2 条由用户决策（D13、D14）
+- 并行化：2 条通道，S0 和 S1→S2 并行，S3、S4 顺序执行
+- Lake Score：4/4（D4、D7、D11、D14 选的都是完整度最高的方案）
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Outside Review | codex（gpt-6-astra），由 /plan-eng-review 调用 | Independent 2nd opinion | 1 | completed | 5 条发现：3 条事实修正，2 条已决策 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN（问题已映射为任务 T1–T8，没有未决项） | 15 个问题，0 个严重缺口 |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE COVERAGE:** codex，plan-review 阶段，已完成，提出 5 条（O1–O5）。
+- **VERDICT:** Eng Review 已完成，所有决策都已定稿，问题都映射成了 T1–T8 实现任务。先做 T1 探针，它会决定 D-DRAFT 和 D-FALLBACK 用哪一条路径。CEO 和 Design 评审都还没做（可选）。
+
+NO UNRESOLVED DECISIONS
