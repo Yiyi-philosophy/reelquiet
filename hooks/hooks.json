@@ -1,4 +1,1 @@
-{
-  "description": "ReelQuiet hooks module",
-  "modules": ["./register.ts"]
-}
+{ "description": "ReelQuiet hooks module", "modules": ["./register.tsx"] }

@@ -2,5 +2,16 @@
   "name": "reelquiet",
   "version": "0.1.0",
   "description": "ReelQuiet: a quiet fishing pond for the wait while your coding agent works. Real species, zero tokens, no file or network access. Not an official Anthropic product.",
-  "author": { "name": "ReelQuiet contributors" }
+  "author": {
+    "name": "ReelQuiet contributors"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "testCommands": {
+      "type": "string",
+      "title": "Extra test command pattern",
+      "description": "Optional regular expression for test commands beyond the built-in list (npm test, pytest, cargo test, ...).",
+      "default": ""
+    }
+  }
 }
