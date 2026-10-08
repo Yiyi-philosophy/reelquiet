@@ -457,3 +457,97 @@ describe('the D1 record safety cap', () => {
     expect(records(rare.send({ type: 'reel' }))).toHaveLength(1)
   })
 })
+
+describe('D-T2 / V-NARROW: a reel button that cannot fit pauses the same way a draft does', () => {
+  test('the rare window stops counting while the layout blocks the reel', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    expect(h.state.windowRemainingMs).toBe(5000)
+
+    h.send({ type: 'layoutChanged', blocked: true })
+    expect(h.state.layoutBlocked).toBe(true)
+    expect(reelActionable(h.state)).toBe(false)
+
+    h.advanceBy(600000)
+    expect(h.state.phase).toBe('hooked')
+    expect(h.state.windowRemainingMs).toBe(5000)
+    expect(records(h.all)).toHaveLength(0)
+  })
+
+  test('widening the terminal lets the same window run out to a sighting', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'layoutChanged', blocked: true })
+    h.advanceBy(600000)
+
+    h.send({ type: 'layoutChanged', blocked: false })
+    expect(reelActionable(h.state)).toBe(true)
+
+    h.advanceBy(4900)
+    expect(h.state.phase).toBe('hooked')
+    expect(records(h.advanceBy(200))[0].outcome).toBe('sighted')
+  })
+
+  test('the layout never loses the fish: a reel still lands it while blocked', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'layoutChanged', blocked: true })
+
+    expect(reelAvailable(h.state)).toBe(true)
+    const caught = records(h.send({ type: 'reel' }))
+    expect(caught[0].outcome).toBe('caught')
+    expect(caught[0].rarity).toBe('rare')
+  })
+
+  test('the carried grace blocks and restarts exactly like the draft path', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'complete' })
+    expect(h.state.carry).toEqual({ grace: 'running', remainingMs: 10000 })
+
+    h.send({ type: 'layoutChanged', blocked: true })
+    expect(h.state.carry).toEqual({ grace: 'blocked', remainingMs: 0 })
+    expect(timerOn(h.state)).toBe(false)
+
+    h.advanceBy(600000)
+    expect(h.state.phase).toBe('carried')
+
+    h.send({ type: 'layoutChanged', blocked: false })
+    expect(h.state.carry).toEqual({ grace: 'running', remainingMs: 45000 })
+    expect(timerOn(h.state)).toBe(true)
+  })
+
+  test('a draft and a blocked layout both have to clear before the grace runs again', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'complete' })
+
+    h.send({ type: 'draftChanged', isDraft: true })
+    h.send({ type: 'layoutChanged', blocked: true })
+    expect(h.state.carry).toEqual({ grace: 'blocked', remainingMs: 0 })
+
+    h.send({ type: 'draftChanged', isDraft: false })
+    expect(h.state.carry).toEqual({ grace: 'blocked', remainingMs: 0 })
+
+    h.send({ type: 'layoutChanged', blocked: false })
+    expect(h.state.carry).toEqual({ grace: 'running', remainingMs: 45000 })
+  })
+
+  test('ctx.reelBlockedByLayout carries the same signal as the event', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+
+    h.advanceBy(1000, { reelBlockedByLayout: true })
+    expect(h.state.layoutBlocked).toBe(true)
+    expect(h.state.windowRemainingMs).toBe(5000)
+  })
+
+  test('blocking the layout adds no new phase', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'layoutChanged', blocked: true })
+    expect(h.state.phase).toBe('hooked')
+    h.send({ type: 'complete' })
+    expect(h.state.phase).toBe('carried')
+  })
+})

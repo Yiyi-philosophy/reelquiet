@@ -25,7 +25,9 @@ const LOCAL_EVENT_PHRASE: Record<ControlledEventType, string> = {
  * command or prompt content.
  */
 const PUBLIC_EVENT_PHRASE: Record<ControlledEventType, string> = {
-  'tests-green': 'caught the moment the tests went green',
+  // Exact copy from the Stage 1 Visual Spec's F-CARD-RARE fixture
+  // ("caught as tests turned green · 2026-10-08").
+  'tests-green': 'caught as tests turned green',
   edit: 'caught mid-edit',
   'tool-call': 'caught during a tool run',
   'turn-complete': 'caught as the task finished',
@@ -34,8 +36,16 @@ const PUBLIC_EVENT_PHRASE: Record<ControlledEventType, string> = {
   unknown: 'caught while the agent worked',
 }
 
-/** D14 empty-state line for "Recent memories". */
-export const EMPTY_MEMORIES_LINE = 'No memories yet — cast off by giving Claude something to do.'
+/**
+ * D14 empty-state line for "Recent memories".
+ *
+ * Exact copy from the Stage 1 Visual Spec's F-MEM-EMPTY fixture. The earlier
+ * draft ("No memories yet — cast off by giving Claude something to do.")
+ * promised a catch and used an em dash; V-MEM asks for 温和、准确 instead, and
+ * the Visual Spec is the later, approved section.
+ */
+export const EMPTY_MEMORIES_LINE =
+  'Nothing here yet. Catches and rare sightings will appear here gradually as Claude works.'
 
 export function localEventPhrase(eventType: ControlledEventType): string {
   return LOCAL_EVENT_PHRASE[eventType] ?? LOCAL_EVENT_PHRASE.unknown

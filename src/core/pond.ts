@@ -18,6 +18,10 @@
 //            `postSubmitGraceMs` — Stage 1 never resumes a partial window.
 //            At most one unresolved rare encounter: a `cast` arriving while
 //            carried does not start a new one, it waits.
+//   V-NARROW  (D-T2) a reel button the band could not lay out is the same kind
+//            of obstacle as a draft, so it takes the same pause path:
+//            `layoutBlocked` joins `isDraft` in `reelActionable`. No new phase,
+//            no new rule — "布局永远不会导致鱼逃走".
 //   D-ABORT  no rewards; a hooked common escapes with no record; a hooked rare+
 //            becomes a sighting; freezes are cleared.
 //   D9       a rare+ encounter also appends one `v1:e:` key for the day's soft
@@ -88,6 +92,12 @@ export type PondState = {
   activeFreezes: string[]
   /** Last known `PromptHint.isDraft` (F3). */
   isDraft: boolean
+  /**
+   * V-NARROW / D-T2: the band reported that the reel button could not be laid
+   * out at the current width. Treated exactly like a draft: the reel is not
+   * actionable, so nothing counts down.
+   */
+  layoutBlocked: boolean
   /** D9 ①: this turn has had a tool call or model request. */
   contextActive: boolean
   /** D13: a cast arrived while a carried rare was unresolved; throw it once resolved. */
@@ -108,6 +118,7 @@ export type PondEvent =
   | { type: 'freeze'; id: string }
   | { type: 'unfreeze'; id: string }
   | { type: 'draftChanged'; isDraft: boolean }
+  | { type: 'layoutChanged'; blocked: boolean }
   | { type: 'activity'; kind: ActivityKind }
   | { type: 'complete' }
   | { type: 'abort' }
@@ -133,6 +144,8 @@ export type PondCtx = {
   detailedRecordCount?: number
   /** Authoritative draft state from the host, if it just told us. */
   isDraft?: boolean
+  /** V-NARROW / D-T2: the band's latest `meta.reelBlockedByLayout`, if known. */
+  reelBlockedByLayout?: boolean
 }
 
 export type PondEffect =
@@ -158,6 +171,7 @@ export function createPondState(seed = 1): PondState {
     carry: null,
     activeFreezes: [],
     isDraft: false,
+    layoutBlocked: false,
     contextActive: false,
     pendingCast: false,
     lastEventType: 'unknown',
@@ -189,9 +203,16 @@ export function reelAvailable(state: PondState, _isDraft: boolean = state.isDraf
   return false
 }
 
-/** D13: the rare window and the carried grace only run while this is true. */
+/**
+ * D13 + D-T2: the rare window and the carried grace only run while this is
+ * true — a reel has to be genuinely possible for its clock to count.
+ *
+ * Three things can stand in the way, and they are interchangeable: a freeze
+ * (D11), a draft in the prompt (D13), and a reel button the band could not lay
+ * out (V-NARROW). None of them is a new phase and none of them loses the fish.
+ */
 export function reelActionable(state: PondState, isDraft: boolean = state.isDraft): boolean {
-  return reelAvailable(state, isDraft) && !isDraft
+  return reelAvailable(state, isDraft) && !isDraft && !state.layoutBlocked
 }
 
 /**
@@ -212,7 +233,7 @@ export function timerOn(state: PondState): boolean {
  * rendering.
  */
 export function deadlineAt(state: PondState, now: number): number | null {
-  if (isFrozen(state)) return null
+  if (isFrozen(state) || state.layoutBlocked) return null
   if (state.phase === 'hooked') {
     if (state.isDraft || state.windowRemainingMs == null) return null
     return now + state.windowRemainingMs
@@ -236,6 +257,9 @@ export function step(state: PondState, event: PondEvent, ctx: PondCtx): StepResu
   const before = state
 
   let s = ctx.isDraft === undefined ? state : setDraft(state, ctx.isDraft, params, effects)
+  if (ctx.reelBlockedByLayout !== undefined) {
+    s = setLayoutBlocked(s, ctx.reelBlockedByLayout, params, effects)
+  }
 
   switch (event.type) {
     case 'cast':
@@ -255,6 +279,9 @@ export function step(state: PondState, event: PondEvent, ctx: PondCtx): StepResu
       break
     case 'draftChanged':
       s = setDraft(s, event.isDraft === true, params, effects)
+      break
+    case 'layoutChanged':
+      s = setLayoutBlocked(s, event.blocked === true, params, effects)
       break
     case 'activity':
       s = onActivity(s, event.kind)
@@ -466,7 +493,7 @@ function onComplete(s: PondState, ctx: PondCtx, params: PondParams, effects: Pon
 
   if (next.phase === 'hooked' && next.fish && isRareTier(next.fish.tier)) {
     // D13: carry it into the gap between turns.
-    const blocked = next.isDraft
+    const blocked = reelObstructed(next)
     effects.push({
       type: 'debug',
       msg: blocked
@@ -632,6 +659,17 @@ function clearFreezes(s: PondState, ctx: PondCtx, effects: PondEffect[], reason:
   return { ...s, activeFreezes: [], clock: resync(s.clock, ctx.now) }
 }
 
+/**
+ * D13 + D-T2: is something standing between the user and the reel button?
+ *
+ * A draft in the prompt eats the digit hotkey (V2); a button the band could not
+ * lay out is not there to press at all (V-NARROW). Both block, both unblock the
+ * same way, and both leave the phase alone.
+ */
+function reelObstructed(s: PondState): boolean {
+  return s.isDraft || s.layoutBlocked
+}
+
 function setDraft(
   s: PondState,
   isDraft: boolean,
@@ -639,15 +677,55 @@ function setDraft(
   effects: PondEffect[],
 ): PondState {
   if (s.isDraft === isDraft) return s
-  const next: PondState = { ...s, isDraft }
-  if (next.phase !== 'carried' || !next.carry) return next
+  return applyObstruction(
+    s,
+    { ...s, isDraft },
+    params,
+    effects,
+    isDraft ? 'draft in the prompt' : 'draft cleared or sent',
+  )
+}
 
-  if (isDraft) {
-    // D13: typing blocks the grace window outright — it cannot time out.
-    effects.push({ type: 'debug', msg: 'carried grace blocked: draft in the prompt' })
+function setLayoutBlocked(
+  s: PondState,
+  blocked: boolean,
+  params: PondParams,
+  effects: PondEffect[],
+): PondState {
+  if (s.layoutBlocked === blocked) return s
+  return applyObstruction(
+    s,
+    { ...s, layoutBlocked: blocked },
+    params,
+    effects,
+    blocked ? 'the reel button does not fit' : 'the reel button fits again',
+  )
+}
+
+/**
+ * The one carried-grace path, shared by the draft signal and the layout signal.
+ *
+ * While carried, the grace window exists only when nothing obstructs the reel.
+ * It starts at full length every time the last obstruction clears — Stage 1
+ * never resumes a remainder (D13).
+ */
+function applyObstruction(
+  before: PondState,
+  next: PondState,
+  params: PondParams,
+  effects: PondEffect[],
+  reason: string,
+): PondState {
+  if (next.phase !== 'carried' || !next.carry) return next
+  if (reelObstructed(next) === reelObstructed(before)) return next
+
+  if (reelObstructed(next)) {
+    effects.push({ type: 'debug', msg: `carried grace blocked: ${reason}` })
     return { ...next, carry: { grace: 'blocked', remainingMs: 0 } }
   }
-  // D13: a fixed fresh window once the draft is cleared or sent. Never a remainder.
-  effects.push({ type: 'debug', msg: `carried grace started: ${params.postSubmitGraceMs}ms` })
+  effects.push({
+    type: 'debug',
+    msg: `carried grace started: ${params.postSubmitGraceMs}ms (${reason})`,
+  })
   return { ...next, carry: { grace: 'running', remainingMs: params.postSubmitGraceMs } }
 }
