@@ -20,8 +20,14 @@ import {
   type PondState,
 } from '../src/core/pond.ts'
 import { encounterDatePrefix, type CatchRecord } from '../src/core/records.ts'
-import { createSignalsState, observeCommand, type SignalsState } from '../src/core/signals.ts'
-import { isRareTier, utcDateOf } from '../src/core/types.ts'
+import {
+  castAllowed,
+  compilePatterns,
+  createSignalsState,
+  observeCommand,
+  type SignalsState,
+} from '../src/core/signals.ts'
+import { isRareTier, utcDateOf, type Tier } from '../src/core/types.ts'
 import { SPECIES } from '../src/data/species.ts'
 import { renderBand, RESULT_DIM_AFTER_MS, RESULT_MIN_HOLD_MS, RESULT_MIN_HOLD_RARE_MS } from '../src/render/band.ts'
 import { emitCatchCard, lookupSpecies } from '../src/render/card.ts'
@@ -56,6 +62,7 @@ let resultShownAt: number | null = null
 let shownResultAt: number | null = null
 // V-RESULT: a result stays up until the next cast, but never less than its minimum hold.
 let clearResultAfterHold = false
+let heldTier: Tier | null = null
 let sessionId = 'session'
 let sessionSeed = 1
 let repoName = ''
@@ -69,8 +76,14 @@ let storeFailed = false
 let bodyColumns = 75
 let bandRequestId = ''
 let lastText = ''
+// Latest host observations; detached work applies these, never a stale capture.
+let observedDraft = false
+let observedBlocked = false
 let lastCells = ''
 let ticker: { cancel: () => void } | null = null
+// Ticks persist at most once a second; every other event persists immediately.
+let lastTickPersistAt = 0
+const TICK_PERSIST_MS = 1000
 const askPending = new Set<string>()
 
 // ---------------------------------------------------------------- helpers
@@ -82,6 +95,27 @@ function localOffsetMinutes(now: number): number {
   } catch {
     return 0
   }
+}
+
+// Restored $.state is untrusted: an older build or a bad write must degrade, not disable the mod.
+function isPondState(v: unknown): v is PondState {
+  const s = v as PondState | null
+  return (
+    !!s &&
+    typeof s === 'object' &&
+    typeof s.phase === 'string' &&
+    ['idle', 'waiting', 'hooked', 'carried'].includes(s.phase) &&
+    !!s.clock &&
+    typeof s.clock.simMs === 'number' &&
+    Array.isArray(s.activeFreezes) &&
+    typeof s.seq === 'number' &&
+    typeof s.rngState === 'number'
+  )
+}
+
+function elicitationId(e: unknown): string {
+  const ev = e as { elicitation_id?: string; mcp_server_name?: string }
+  return 'elicitation:' + (ev.elicitation_id ?? 'server:' + String(ev.mcp_server_name ?? 'mcp'))
 }
 
 function hashString(text: string): number {
@@ -128,7 +162,7 @@ function model(now: number): RenderModel | null {
 }
 
 function holdMs(): number {
-  const tier = pond.lastResult?.tier
+  const tier = heldTier
   return tier && isRareTier(tier) ? RESULT_MIN_HOLD_RARE_MS : RESULT_MIN_HOLD_MS
 }
 
@@ -141,11 +175,24 @@ function retireResult(now: number) {
 }
 
 async function persist($: any) {
-  await update($, pondAtom, () => pond)
-  await update($, signalsAtom, () => signals)
-  await update($, seenAtom, () => seenCards)
-  await update($, shownAtAtom, () => resultShownAt)
-  await update($, retireAtom, () => clearResultAfterHold)
+  try {
+    await update($, pondAtom, () => pond)
+    await update($, signalsAtom, () => signals)
+    await update($, seenAtom, () => seenCards)
+    await update($, shownAtAtom, () => resultShownAt)
+    await update($, retireAtom, () => clearResultAfterHold)
+  } catch (err) {
+    // A refused write (for example during a draw) keeps the module copy; the next event persists again.
+    $.ui.log('persist deferred: ' + String(err), { to: 'debug' })
+  }
+}
+
+// Detached game work (draft, layout, reel press): never an unhandled rejection.
+function detached($: any, label: string, work: (now: number) => Promise<void>) {
+  $.clock
+    .now()
+    .then((now: number) => work(now))
+    .catch((err: unknown) => $.ui.log(label + ' failed: ' + String(err), { to: 'debug' }))
 }
 
 // Redraw: text changes rebuild the tree; raster-only changes use blit (V6).
@@ -154,7 +201,7 @@ async function redraw($: any, now: number) {
   const m = model(now)
   const text = m ? toPlainText(m) : ''
   const cells = m && m.raster ? encodeCells(m) : ''
-  const textOnly = m ? toPlainText({ ...m, raster: null }) : ''
+  const textOnly = m ? toPlainText({ ...m, raster: null }) + (m.meta.resultDimmed ? '\u0000dim' : '') : ''
   const lastTextOnly = lastText
   if (textOnly !== lastTextOnly || !bandRequestId || !m || !m.raster) {
     lastText = textOnly
@@ -176,7 +223,7 @@ function resultVisible(now: number): boolean {
 }
 
 function ensureTicker($: any, now: number) {
-  const wanted = timerOn(pond) || resultVisible(now)
+  const wanted = (timerOn(pond) && !isFrozen(pond)) || resultVisible(now)
   if (wanted && !ticker) {
     ticker = $.clock.every(TICK_MS, () => onTick($))
   } else if (!wanted && ticker) {
@@ -219,23 +266,29 @@ async function advance($: any, event: PondEvent, now: number) {
   pond = r.state
   await applyEffects($, r.effects, now)
   ensureTicker($, now)
+  if (event.type === 'tick' && r.effects.length === 0 && now - lastTickPersistAt < TICK_PERSIST_MS) return
+  lastTickPersistAt = now
   await persist($)
 }
 
 async function applyEffects($: any, effects: PondEffect[], now: number) {
   for (const fx of effects) {
     if (fx.type === 'record') {
-      await storeSet($, fx.key, fx.record)
-      if (fx.key.startsWith('v1:c:')) detailedCount += 1
-      emitCard($, fx.key, fx.record)
+      const saved = await storeSet($, fx.key, fx.record)
+      if (saved && fx.key.startsWith('v1:c:')) detailedCount += 1
+      if (saved) emitCard($, fx.key, fx.record)
     } else if (fx.type === 'encounter') {
       await storeSet($, fx.key, fx.record)
       todayRareCount += 1
     } else if (fx.type === 'result') {
       if (shownResultAt !== fx.result.at) {
         shownResultAt = fx.result.at
-        if (fx.result.kind !== 'escaped') {
+        if (fx.result.kind === 'escaped') {
+          resultShownAt = null
+          heldTier = null
+        } else {
           resultShownAt = now
+          heldTier = fx.result.tier
           clearResultAfterHold = false
         }
       }
@@ -253,13 +306,15 @@ function emitCard($: any, key: string, record: CatchRecord) {
   for (const line of out.lines) $.ui.log(line)
 }
 
-async function storeSet($: any, key: string, value: unknown) {
-  if (storeFailed) return
+async function storeSet($: any, key: string, value: unknown): Promise<boolean> {
+  if (storeFailed) return false
   try {
     await $.store.set(key, value)
+    return true
   } catch {
     storeFailed = true
-    $.ui.toast('ReelQuiet: storage is full or unavailable; this session keeps catches in memory only.')
+    $.ui.toast('ReelQuiet: storage is full or unavailable; new catches are not being saved.')
+    return false
   }
 }
 
@@ -275,13 +330,9 @@ async function countToday($: any, date: string): Promise<number> {
 
 async function loadRecords($: any): Promise<CatchRecord[]> {
   const keys: string[] = await $.store.keys()
-  const out: CatchRecord[] = []
-  for (const key of keys) {
-    if (!RECORD_PREFIXES.some(p => key.startsWith(p))) continue
-    const value = await $.store.get(key)
-    if (value && typeof value === 'object') out.push(value as CatchRecord)
-  }
-  return out
+  const wanted = keys.filter(key => RECORD_PREFIXES.some(p => key.startsWith(p)))
+  const values: unknown[] = await Promise.all(wanted.map(key => $.store.get(key)))
+  return values.filter((v): v is CatchRecord => v !== null && typeof v === 'object')
 }
 
 // --------------------------------------------------------------- register
@@ -289,6 +340,7 @@ async function loadRecords($: any): Promise<CatchRecord[]> {
 export const register: Register = (on, options) => {
   const extra = (options as Record<string, unknown> | undefined)?.testCommands
   extraTestPatterns = typeof extra === 'string' && extra.trim() ? [extra.trim()] : []
+  compilePatterns(extraTestPatterns)
 
   on('session.start', async ($, e, next) => {
     try {
@@ -307,11 +359,15 @@ export const register: Register = (on, options) => {
           noColor = true
         }
         const saved = await read($, pondAtom)
-        pond = saved ? resume(saved as PondState, now) : createPondState(sessionSeed)
-        signals = await read($, signalsAtom)
-        seenCards = await read($, seenAtom)
-        resultShownAt = await read($, shownAtAtom)
-        clearResultAfterHold = await read($, retireAtom)
+        pond = isPondState(saved) ? resume(saved, now) : createPondState(sessionSeed)
+        const savedSignals = await read($, signalsAtom)
+        signals = savedSignals && typeof savedSignals.red === 'object' && savedSignals.red !== null ? savedSignals : createSignalsState()
+        const savedSeen = await read($, seenAtom)
+        seenCards = Array.isArray(savedSeen) ? savedSeen.filter(x => typeof x === 'string') : []
+        const savedShown = await read($, shownAtAtom)
+        resultShownAt = typeof savedShown === 'number' ? savedShown : null
+        heldTier = resultShownAt !== null && pond.lastResult ? pond.lastResult.tier : null
+        clearResultAfterHold = (await read($, retireAtom)) === true
         shownResultAt = pond.lastResult ? pond.lastResult.at : null
         try {
           const keys: string[] = await $.store.keys()
@@ -351,7 +407,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     try {
-      if (enabled) {
+      if (enabled && castAllowed(e as { agentId?: string | null })) {
         const now = await $.clock.now()
         askPending.clear()
         recentFiles = []
@@ -370,6 +426,8 @@ export const register: Register = (on, options) => {
     } catch (err) {
       $.ui.log('activity failed: ' + String(err), { to: 'debug' })
     }
+    return yield* next(e)
+  }).catch(async function* ($, e, next) {
     return yield* next(e)
   })
 
@@ -432,9 +490,9 @@ export const register: Register = (on, options) => {
     } finally {
       try {
         if (enabled && askPending.has(id)) {
-          askPending.delete(id)
           const now = await $.clock.now()
           await advance($, { type: 'unfreeze', id }, now)
+          askPending.delete(id)
           await redraw($, now)
         }
       } catch (err) {
@@ -463,7 +521,7 @@ export const register: Register = (on, options) => {
   on('classic.Elicitation', async ($, e, next) => {
     try {
       if (enabled) {
-        const id = 'elicitation:' + String((e as { elicitation_id?: string }).elicitation_id ?? 'mcp')
+        const id = elicitationId(e)
         const now = await $.clock.now()
         await advance($, { type: 'freeze', id }, now)
         await redraw($, now)
@@ -477,7 +535,7 @@ export const register: Register = (on, options) => {
   on('classic.ElicitationResult', async ($, e, next) => {
     try {
       if (enabled) {
-        const id = 'elicitation:' + String((e as { elicitation_id?: string }).elicitation_id ?? 'mcp')
+        const id = elicitationId(e)
         const now = await $.clock.now()
         await advance($, { type: 'unfreeze', id }, now)
         await redraw($, now)
@@ -491,10 +549,15 @@ export const register: Register = (on, options) => {
   // V1: draft state, read-only; the hint line is passed through unchanged.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     try {
-      if (enabled && e.props.isDraft !== pond.isDraft) {
-        const isDraft = e.props.isDraft
+      observedDraft = e.props.isDraft
+      if (enabled && observedDraft !== pond.isDraft) {
         $.clock.after(0, () => {
-          $.clock.now().then(now => advance($, { type: 'draftChanged', isDraft }, now).then(() => redraw($, now)))
+          detached($, 'draft', async now => {
+            // Apply the newest observed draft state, not the one captured at schedule time.
+            if (observedDraft === pond.isDraft) return
+            await advance($, { type: 'draftChanged', isDraft: observedDraft }, now)
+            await redraw($, now)
+          })
         })
       }
     } catch (err) {
@@ -504,21 +567,29 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (!enabled || e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
+    if (!enabled || e.surface !== 'terminal' || e.props.hasSurvey) {
+      bandRequestId = ''
+      return next(e)
+    }
     const now = await $.clock.now()
     bodyColumns = e.props.bodyColumns
     bandRequestId = e.requestId
     const m = model(now)
     if (!m) return next(e)
 
-    if (m.meta.reelBlockedByLayout !== pond.layoutBlocked) {
-      const blocked = m.meta.reelBlockedByLayout
+    observedBlocked = m.meta.reelBlockedByLayout
+    if (observedBlocked !== pond.layoutBlocked) {
       $.clock.after(0, () => {
-        $.clock.now().then(t => advance($, { type: 'layoutChanged', blocked }, t).then(() => redraw($, t)))
+        detached($, 'layout', async t => {
+          if (observedBlocked === pond.layoutBlocked) return
+          await advance($, { type: 'layoutChanged', blocked: observedBlocked }, t)
+          await redraw($, t)
+        })
       })
     }
-    lastText = toPlainText({ ...m, raster: null })
-    lastCells = m.raster ? encodeCells(m) : ''
+    lastText = toPlainText({ ...m, raster: null }) + (m.meta.resultDimmed ? '\u0000dim' : '')
+    const cells = m.raster ? encodeCells(m) : ''
+    lastCells = cells
 
     const { Box, Text, Button, Raster } = $.ui.resolve(e)
     const canReel = m.reelButton !== null && reelAvailable(pond) && !isFrozen(pond)
@@ -541,7 +612,10 @@ export const register: Register = (on, options) => {
             hotkey="1"
             plain
             onPress={() =>
-              $.clock.now().then(t => advance($, { type: 'reel' }, t).then(() => redraw($, t)))
+              detached($, 'reel', async t => {
+                await advance($, { type: 'reel' }, t)
+                await redraw($, t)
+              })
             }
           />
         ) : null}
@@ -551,7 +625,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="row" columnGap={m.raster ? 2 : 0}>
         {m.raster ? (
-          <Raster key="pond" columns={m.raster.columns} rows={m.raster.rows} cells={encodeCells(m)} />
+          <Raster key="pond" columns={m.raster.columns} rows={m.raster.rows} cells={cells} />
         ) : null}
         <Box flexDirection="column">{rows}</Box>
       </Box>
@@ -567,7 +641,7 @@ export const register: Register = (on, options) => {
       }
       const records = await loadRecords($)
       const now = await $.clock.now()
-      const columns = Math.min(bodyColumns, LOG_MAX_COLUMNS) - LOG_PREFIX_COLUMNS
+      const columns = Math.max(24, Math.min(bodyColumns, LOG_MAX_COLUMNS) - LOG_PREFIX_COLUMNS)
       const lines = recentMemoryLines(records, { total: records.length, columns, offsetMinutes: localOffsetMinutes(now) })
       for (const line of lines) $.ui.log(line)
     } catch (err) {
@@ -575,5 +649,5 @@ export const register: Register = (on, options) => {
       $.ui.log('log failed: ' + String(err), { to: 'debug' })
     }
     return {}
-  })
+  }).catch(() => ({}))
 }

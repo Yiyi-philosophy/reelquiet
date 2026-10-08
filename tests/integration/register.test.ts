@@ -83,3 +83,11 @@ test('AskUserQuestion freezes the band until the call settles (permission ask is
   const after = await $.ui.mount({ plugin: 'reelquiet', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
   expect(flatten(await after.drawn())).not.toContain('Claude needs you')
 })
+
+test('review fix: a subagent turn.start does not cast', async ($, on) => {
+  terminalHost(on)
+  await $.session.start({ cwd: '/work/demo-repo' } as never)
+  await $.turn.start({ text: 'sub', turnId: 't2', agentId: 'agent-1' } as never)
+  const band = await $.ui.mount({ plugin: 'reelquiet', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  expect(flatten(await band.drawn())).not.toContain('waiting')
+})

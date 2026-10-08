@@ -46,6 +46,7 @@ import {
   type RenderModel,
   type TextSegment,
   type WidthTier,
+  stripColor,
 } from './model.ts'
 import { waterForRow, type PaletteToken } from './palette.ts'
 
@@ -575,23 +576,5 @@ function materialize(plan: BandPlan, noColor: boolean): RenderModel {
     },
   }
 
-  return noColor ? withoutColor(model) : model
-}
-
-function withoutColor(model: RenderModel): RenderModel {
-  return {
-    ...model,
-    raster:
-      model.raster == null
-        ? null
-        : {
-            columns: model.raster.columns,
-            rows: model.raster.rows,
-            cells: model.raster.cells.map((cell) => ({ ch: cell.ch, fg: null, bg: null })),
-          },
-    rows: model.rows.map((row) => ({
-      ...row,
-      segments: row.segments.map((s) => ({ ...s, color: null })),
-    })),
-  }
+  return noColor ? stripColor(model) : model
 }

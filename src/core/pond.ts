@@ -278,11 +278,17 @@ export function step(state: PondState, event: PondEvent, ctx: PondCtx): StepResu
       s = onUnfreeze(s, event.id, ctx, effects)
       break
     case 'draftChanged':
-      s = setDraft(s, event.isDraft === true, params, effects)
+    case 'layoutChanged': {
+      // Review fix: an obstruction change resyncs the clock, so a gap with no
+      // ticks (a blocked carry stops the timer) is never charged to the grace.
+      const before = s
+      s =
+        event.type === 'draftChanged'
+          ? setDraft(s, event.isDraft === true, params, effects)
+          : setLayoutBlocked(s, event.blocked === true, params, effects)
+      if (s !== before) s = { ...s, clock: resync(s.clock, ctx.now) }
       break
-    case 'layoutChanged':
-      s = setLayoutBlocked(s, event.blocked === true, params, effects)
-      break
+    }
     case 'activity':
       s = onActivity(s, event.kind)
       break

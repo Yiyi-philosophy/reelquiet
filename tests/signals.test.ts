@@ -189,3 +189,10 @@ describe('subagents signal but never cast', () => {
     expect(isMainAgent('agent-7')).toBe(false)
   })
 })
+
+test('review fix: red-light keys never hold command text', () => {
+  const out = observeCommand(createSignalsState(), { sessionId: 's', command: 'API_TOKEN=sk-live-123 npm test', isError: true })
+  const keys = Object.keys(out.state.red).join('|')
+  expect(keys).not.toContain('npm')
+  expect(keys).not.toContain('sk-live-123')
+})

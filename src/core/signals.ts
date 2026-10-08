@@ -86,10 +86,21 @@ export function compilePatterns(extra: readonly string[] = []): CompiledPatterns
   return { patterns, invalid }
 }
 
+// Review fix: patterns compile once per distinct extra list, and the subject is
+// capped so a pathological user regex cannot stall the hook on a long command.
+const MAX_MATCH_CHARS = 4096
+let cacheKey: string | null = null
+let cachePatterns: RegExp[] = []
+
 export function isTestCommand(command: string, extra: readonly string[] = []): boolean {
   if (typeof command !== 'string' || command.trim().length === 0) return false
-  const { patterns } = compilePatterns(extra)
-  return patterns.some((re) => re.test(command))
+  const key = extra.join('\u0000')
+  if (key !== cacheKey) {
+    cachePatterns = compilePatterns(extra).patterns
+    cacheKey = key
+  }
+  const subject = command.slice(0, MAX_MATCH_CHARS)
+  return cachePatterns.some((re) => re.test(subject))
 }
 
 /**
@@ -105,8 +116,12 @@ export function fingerprintOf(command: string): string {
   return text
 }
 
+// D12: never keep command text, even in session memory. The red-light key holds
+// only a 32-bit FNV-1a hash of the normalized fingerprint.
 function redKey(sessionId: string, fingerprint: string): string {
-  return `${sessionId}\u0000${fingerprint}`
+  let h = 0x811c9dc5
+  for (let i = 0; i < fingerprint.length; i++) h = Math.imul(h ^ fingerprint.charCodeAt(i), 0x01000193)
+  return `${sessionId}\u0000${(h >>> 0).toString(16)}`
 }
 
 /**

@@ -224,6 +224,16 @@ describe('D13 carried, draft-blocked, grace', () => {
     expect(records(h.all)).toHaveLength(0)
   })
 
+  test('review fix: a long untimed gap before the draft clears is not charged to the grace', () => {
+    const h = carryWithDraft()
+    // No ticks while blocked (the host ticker is off), then the draft clears 10 minutes later.
+    const later = h.now + 600000
+    h.send({ type: 'draftChanged', isDraft: false }, { now: later })
+    h.send({ type: 'tick' }, { now: later + 100 })
+    expect(h.state.phase).toBe('carried')
+    expect(h.state.carry?.remainingMs).toBe(44900)
+  })
+
   test('clearing the draft starts a fixed postSubmitGraceMs that expires to a sighting', () => {
     const h = carryWithDraft()
     h.advanceBy(600000)
