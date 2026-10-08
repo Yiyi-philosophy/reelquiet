@@ -7,6 +7,7 @@ declare module 'claude-code' {
       signals: { red: Record<string, true> }
       seenCards: string[]
       resultShownAt: number | null
+      clearResultAfterHold: boolean
     }
   }
 }
