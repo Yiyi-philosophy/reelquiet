@@ -193,6 +193,9 @@ export function validateCatchRecord(value: unknown, path = 'record'): Validation
       if (!BASENAME_PATTERN.test(file)) errors.push(`${at} must be a bare basename`)
     })
   }
+  if (obj.local_date !== undefined && !(typeof obj.local_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.local_date))) {
+    errors.push(`${path}.local_date must be YYYY-MM-DD`)
+  }
 
   return errors.length === 0 ? { ok: true } : fail(errors)
 }

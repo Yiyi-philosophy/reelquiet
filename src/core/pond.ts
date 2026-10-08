@@ -131,6 +131,8 @@ export type PondCtx = {
   species?: readonly Species[]
   /** Injected hour of day (0-23); defaults to UTC from `now`. */
   hourOfDay?: number
+  /** The viewer's UTC offset in minutes (east positive) at `now`; fixes a record's local_date. */
+  offsetMinutes?: number
   /** Injected UTC day for `v1:e:` keys; defaults to UTC from `now`. */
   date?: string
   sessionId?: string
@@ -578,6 +580,7 @@ function settle(
         event_type: next.lastEventType,
         repo: ctx.repo,
         files: ctx.files,
+        local_date: utcDateOf(ctx.now + (ctx.offsetMinutes ?? 0) * 60000),
       },
       params,
     )

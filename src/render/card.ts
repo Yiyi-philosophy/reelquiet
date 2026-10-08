@@ -26,7 +26,7 @@ export function catchCardLines(
 ): string[] {
   if (!isRareTier(record.rarity)) return []
 
-  const card = toPublicCard(record, offsetMinutes)
+  const card = toPublicCard(record)
   const label = rarityLabel(card.rarity)
   const name = displayName(species?.common_name ?? card.species)
 

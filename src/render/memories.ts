@@ -13,7 +13,7 @@
 // reach a line even in principle.
 
 import { EMPTY_MEMORIES_LINE } from '../core/memory.ts'
-import { recentMemories, type CatchRecord } from '../core/records.ts'
+import { recentMemories, type CatchRecord, recordLocalDate } from '../core/records.ts'
 import { isRareTier, type ControlledEventType } from '../core/types.ts'
 import {
   displayName,
@@ -108,7 +108,7 @@ function compose(
   const star = isRareTier(record.rarity) ? '★ ' : ''
 
   const parts: string[] = [
-    `${monthDayText(record.timestamp, offsetMinutes)} ${hourMinuteText(record.timestamp, offsetMinutes)}`,
+    `${recordLocalDate(record).slice(5)} ${hourMinuteText(record.timestamp, offsetMinutes)}`,
     `${star}${displayName(record.species)}`,
   ]
   if (label.length > 0) parts.push(label)

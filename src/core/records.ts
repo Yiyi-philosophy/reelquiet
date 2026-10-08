@@ -30,6 +30,12 @@ export type CatchRecord = {
   event_type: ControlledEventType
   repo: string
   files: string[]
+  /**
+   * D12 (local date): the viewer's calendar date when the catch settled, fixed at
+   * capture so a later timezone change never moves it. YYYY-MM-DD, no time or zone.
+   * Optional: records written before this field derive it from `timestamp` (UTC).
+   */
+  local_date?: string
 }
 
 /** The separate share schema (D12). Carries no repo, file, path, command or prompt. */
@@ -63,6 +69,7 @@ export const CATCH_RECORD_FIELDS: readonly string[] = [
   'event_type',
   'repo',
   'files',
+  'local_date',
 ]
 
 export const PUBLIC_CARD_FIELDS: readonly string[] = [
@@ -143,7 +150,19 @@ export function makeRecord(input: RecordInput, params: PondParams = DEFAULT_PARA
     event_type: oneOf(input.event_type, CONTROLLED_EVENT_TYPES, 'unknown'),
     repo: identifier(input.repo, params.maxFileBasenameChars, ''),
     files: basenames(input.files, params),
+    ...(isLocalDate(input.local_date) ? { local_date: input.local_date } : {}),
   }
+}
+
+const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+export function isLocalDate(value: unknown): value is string {
+  return typeof value === 'string' && LOCAL_DATE.test(value)
+}
+
+/** The record's capture-time local date; legacy records fall back to UTC. */
+export function recordLocalDate(record: CatchRecord): string {
+  return isLocalDate(record.local_date) ? record.local_date : utcDateOf(record.timestamp)
 }
 
 export function makeEncounterRecord(input: RecordInput): RareEncounterRecord {
@@ -159,14 +178,13 @@ export function makeEncounterRecord(input: RecordInput): RareEncounterRecord {
  * D12: projection, not redaction. The card is assembled field by field from the
  * allowlist, so a field added to CatchRecord later cannot leak into a card.
  */
-/** `offsetMinutes`: the viewer's UTC offset (east positive), injected by register; 0 = UTC. */
-export function toPublicCard(record: CatchRecord, offsetMinutes = 0): PublicCatchCard {
+export function toPublicCard(record: CatchRecord): PublicCatchCard {
   return {
     schema_version: SCHEMA_VERSION,
     species: record.species,
     size_cm: record.size_cm,
     rarity: record.rarity,
-    date: utcDateOf(record.timestamp + offsetMinutes * 60000),
+    date: recordLocalDate(record),
     event: publicEventPhrase(record.event_type),
   }
 }

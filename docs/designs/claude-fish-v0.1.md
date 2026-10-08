@@ -491,7 +491,12 @@ Accepted scope:
   - schema 测试：`PublicCatchCard` 的 schema 只允许列出的字段（`additionalProperties: false`）。
   - fixture 测试：用一条带 repo、file、path、token 样式字符串的 `CatchRecord` 做投影，断言输出里不含 repo、file、path、command、prompt 这些字段名，也不含它们的值。
   - `CatchRecord` 的 schema 同样设置 `additionalProperties: false`。
-- **`PublicCatchCard.date`**：取用户的本地日期，只保留年月日，不带时分和时区（/review 之后的 D2 决定）。这是有意的选择：卡片上的日期要和用户自己记得的"那天"一致。代价是在午夜前后，这个日期可能和 UTC 差一天，会透露一点点时区信息。
+- **`PublicCatchCard.date`**（/review 之后的 D2 决定，取代 UTC 日期）：
+  - 取鱼**结算那一刻**的本地日历日期，格式是 `YYYY-MM-DD`，不包含时分秒、时区或 UTC offset。
+  - 这个日期在结算时就固定下来，存进 `CatchRecord.local_date`（v1 的可选字段，也在白名单内），之后不论重新渲染还是切换时区都不会变。内部排序仍然用 UTC `timestamp`。
+  - Recent memories 和 PublicCatchCard 都读同一个 `local_date`，所以两边的日期保证一致。旧记录没有这个字段，就回退为从 `timestamp` 推出的 UTC 日期。
+  - 这是有意接受的、有限的隐私权衡：公开日期可能透露少量活动时间。repo、文件名、命令、prompt 等其他字段的禁止规则不放宽。
+  - 不新增时区配置，也不新增权限。UTC 跨日边界的测试覆盖了正负两种偏移（+08:00、−05:00）。
 - **GIF**：可以用人工构造的公开演示数据（演示仓库、演示文件名）。真实用户默认生成的分享卡片永远是脱敏后的版本。
 History: 推荐选项原本写的是"保存哈希后的命令指纹"；用户收紧为：指纹只放在会话内存里，并用 allowlist 投影来生成卡片。
 

@@ -72,6 +72,7 @@ describe('D12 CatchRecord allowlist', () => {
       cwd: '/home/x/secret',
       tool_arguments: { path: '/home/x/secret/api.ts' },
       schema_version: 99,
+      local_date: '2026-10-08',
     })
 
     expect(Object.keys(record).sort()).toEqual([...CATCH_RECORD_FIELDS].sort())
