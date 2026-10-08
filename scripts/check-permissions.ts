@@ -30,8 +30,9 @@ for (const item of report.contents ?? []) {
     const calls = /calls: (.*)$/.exec(note)
     if (calls) sawCalls = true
     if (calls && calls[1] !== 'nothing on $') {
-      for (const raw of calls[1].split(',')) {
-        const call = raw.trim().replace(/ \(via .*\)$/, '')
+      // Split on commas outside parentheses: notes read `$.store.keys (via a, b, c)`.
+      for (const raw of calls[1].split(/,(?![^(]*\))/)) {
+        const call = raw.trim().replace(/ \(via [^)]*\)$/, '')
         const m = /^\$\.(\w+)\.(\w+)$/.exec(call)
         if (!m) { failures.push(`unparsed call: ${call}`); continue }
         const [, ns, method] = m
