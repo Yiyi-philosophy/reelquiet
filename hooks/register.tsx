@@ -376,6 +376,7 @@ async function advance($: any, event: PondEvent, now: number) {
     repo: repoName,
     files: recentFiles,
     detailedRecordCount: detailedCount,
+    offsetMinutes: localOffsetMinutes(now),
   })
   pond = r.state
   await applyEffects($, r.effects, now)
