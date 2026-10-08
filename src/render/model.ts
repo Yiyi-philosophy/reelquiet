@@ -243,14 +243,15 @@ export function clockText(ms: number): string {
   return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`
 }
 
-/** `MM-DD` in UTC, by integer arithmetic (no Date). */
-export function monthDayText(timestamp: number): string {
-  return utcDateString(timestamp).slice(5)
+/** `MM-DD` at the injected UTC offset (minutes, east positive), by integer arithmetic (no Date). */
+export function monthDayText(timestamp: number, offsetMinutes = 0): string {
+  return utcDateString(timestamp + offsetMinutes * 60000).slice(5)
 }
 
-/** `HH:MM` in UTC, by integer arithmetic (no Date). */
-export function hourMinuteText(timestamp: number): string {
-  const ms = Number.isFinite(timestamp) ? Math.max(0, Math.floor(timestamp)) : 0
+/** `HH:MM` at the injected UTC offset (minutes, east positive), by integer arithmetic (no Date). */
+export function hourMinuteText(timestamp: number, offsetMinutes = 0): string {
+  const local = timestamp + offsetMinutes * 60000
+  const ms = Number.isFinite(local) ? Math.max(0, Math.floor(local)) : 0
   const msOfDay = ms - Math.floor(ms / 86400000) * 86400000
   const hours = Math.floor(msOfDay / 3600000)
   const minutes = Math.floor((msOfDay % 3600000) / 60000)

@@ -159,13 +159,14 @@ export function makeEncounterRecord(input: RecordInput): RareEncounterRecord {
  * D12: projection, not redaction. The card is assembled field by field from the
  * allowlist, so a field added to CatchRecord later cannot leak into a card.
  */
-export function toPublicCard(record: CatchRecord): PublicCatchCard {
+/** `offsetMinutes`: the viewer's UTC offset (east positive), injected by register; 0 = UTC. */
+export function toPublicCard(record: CatchRecord, offsetMinutes = 0): PublicCatchCard {
   return {
     schema_version: SCHEMA_VERSION,
     species: record.species,
     size_cm: record.size_cm,
     rarity: record.rarity,
-    date: utcDateOf(record.timestamp),
+    date: utcDateOf(record.timestamp + offsetMinutes * 60000),
     event: publicEventPhrase(record.event_type),
   }
 }

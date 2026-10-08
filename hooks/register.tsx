@@ -23,7 +23,7 @@ import { encounterDatePrefix, type CatchRecord } from '../src/core/records.ts'
 import { createSignalsState, observeCommand, type SignalsState } from '../src/core/signals.ts'
 import { isRareTier, utcDateOf } from '../src/core/types.ts'
 import { SPECIES } from '../src/data/species.ts'
-import { renderBand, RESULT_DIM_AFTER_MS } from '../src/render/band.ts'
+import { renderBand, RESULT_DIM_AFTER_MS, RESULT_MIN_HOLD_MS, RESULT_MIN_HOLD_RARE_MS } from '../src/render/band.ts'
 import { emitCatchCard, lookupSpecies } from '../src/render/card.ts'
 import { recentMemoryLines } from '../src/render/memories.ts'
 import { toPlainText, type RenderModel } from '../src/render/model.ts'
@@ -35,11 +35,17 @@ const pondAtom = atom({ plugin: 'reelquiet', key: 'pond' } as const, null as obj
 const signalsAtom = atom({ plugin: 'reelquiet', key: 'signals' } as const, { red: {} })
 const seenAtom = atom({ plugin: 'reelquiet', key: 'seenCards' } as const, [] as string[])
 const shownAtAtom = atom({ plugin: 'reelquiet', key: 'resultShownAt' } as const, null as number | null)
+const retireAtom = atom({ plugin: 'reelquiet', key: 'clearResultAfterHold' } as const, false)
 
 const TICK_MS = 100
 const RECORD_PREFIXES = ['v1:c:', 'v1:s:']
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const MAX_FILES = 3
+// Measured in G3: transcript log rows wrap near 80 columns, and each row carries a
+// `● reelquiet: ` prefix. Recent memories lay out to this width so the V-MEM narrow
+// rule (drop basename, repo, event, size) runs before the host wraps a line.
+const LOG_MAX_COLUMNS = 80
+const LOG_PREFIX_COLUMNS = 15
 
 // Module variables: a working copy, restored from $.state on every load.
 let enabled = false
@@ -48,6 +54,8 @@ let signals: SignalsState = createSignalsState()
 let seenCards: string[] = []
 let resultShownAt: number | null = null
 let shownResultAt: number | null = null
+// V-RESULT: a result stays up until the next cast, but never less than its minimum hold.
+let clearResultAfterHold = false
 let sessionId = 'session'
 let sessionSeed = 1
 let repoName = ''
@@ -66,6 +74,15 @@ let ticker: { cancel: () => void } | null = null
 const askPending = new Set<string>()
 
 // ---------------------------------------------------------------- helpers
+
+// The viewer's UTC offset in minutes (east positive). Display only: records stay UTC.
+function localOffsetMinutes(now: number): number {
+  try {
+    return -new Date(now).getTimezoneOffset()
+  } catch {
+    return 0
+  }
+}
 
 function hashString(text: string): number {
   let h = 2166136261
@@ -105,8 +122,22 @@ function model(now: number): RenderModel | null {
     bodyColumns,
     sessionSeed,
     noColor,
+    lastResult: resultShownAt === null ? null : pond.lastResult,
     resultShownAt,
   })
+}
+
+function holdMs(): number {
+  const tier = pond.lastResult?.tier
+  return tier && isRareTier(tier) ? RESULT_MIN_HOLD_RARE_MS : RESULT_MIN_HOLD_MS
+}
+
+// Retire a shown result once a later cast exists and its minimum hold has passed.
+function retireResult(now: number) {
+  if (clearResultAfterHold && resultShownAt !== null && now - resultShownAt >= holdMs()) {
+    resultShownAt = null
+    clearResultAfterHold = false
+  }
 }
 
 async function persist($: any) {
@@ -114,10 +145,12 @@ async function persist($: any) {
   await update($, signalsAtom, () => signals)
   await update($, seenAtom, () => seenCards)
   await update($, shownAtAtom, () => resultShownAt)
+  await update($, retireAtom, () => clearResultAfterHold)
 }
 
 // Redraw: text changes rebuild the tree; raster-only changes use blit (V6).
 async function redraw($: any, now: number) {
+  retireResult(now)
   const m = model(now)
   const text = m ? toPlainText(m) : ''
   const cells = m && m.raster ? encodeCells(m) : ''
@@ -138,7 +171,8 @@ async function redraw($: any, now: number) {
 }
 
 function resultVisible(now: number): boolean {
-  return pond.lastResult !== null && resultShownAt !== null && now - resultShownAt <= RESULT_DIM_AFTER_MS + 1000
+  if (pond.lastResult === null || resultShownAt === null) return false
+  return clearResultAfterHold || now - resultShownAt <= RESULT_DIM_AFTER_MS + 1000
 }
 
 function ensureTicker($: any, now: number) {
@@ -154,6 +188,7 @@ function ensureTicker($: any, now: number) {
 async function onTick($: any) {
   try {
     const now = await $.clock.now()
+    retireResult(now)
     if (timerOn(pond)) await advance($, { type: 'tick', now }, now)
     else ensureTicker($, now)
     await redraw($, now)
@@ -169,6 +204,7 @@ async function advance($: any, event: PondEvent, now: number) {
     todayDate = date
     todayRareCount = await countToday($, date)
   }
+  if (event.type === 'cast' && resultShownAt !== null) clearResultAfterHold = true
   const r = step(pond, event, {
     now,
     species: SPECIES,
@@ -198,7 +234,10 @@ async function applyEffects($: any, effects: PondEffect[], now: number) {
     } else if (fx.type === 'result') {
       if (shownResultAt !== fx.result.at) {
         shownResultAt = fx.result.at
-        resultShownAt = fx.result.kind === 'escaped' ? null : now
+        if (fx.result.kind !== 'escaped') {
+          resultShownAt = now
+          clearResultAfterHold = false
+        }
       }
     } else if (fx.type === 'debug') {
       $.ui.log(fx.msg, { to: 'debug' })
@@ -209,7 +248,7 @@ async function applyEffects($: any, effects: PondEffect[], now: number) {
 // V-CARD / V-RESULT: rare+ only, one ordered group per event id, public fields only.
 function emitCard($: any, key: string, record: CatchRecord) {
   if (!isRareTier(record.rarity)) return
-  const out = emitCatchCard(seenCards, key, record, lookupSpecies(SPECIES, record.species))
+  const out = emitCatchCard(seenCards, key, record, lookupSpecies(SPECIES, record.species), localOffsetMinutes(record.timestamp))
   seenCards = out.seen.slice(-200)
   for (const line of out.lines) $.ui.log(line)
 }
@@ -272,6 +311,7 @@ export const register: Register = (on, options) => {
         signals = await read($, signalsAtom)
         seenCards = await read($, seenAtom)
         resultShownAt = await read($, shownAtAtom)
+        clearResultAfterHold = await read($, retireAtom)
         shownResultAt = pond.lastResult ? pond.lastResult.at : null
         try {
           const keys: string[] = await $.store.keys()
@@ -526,7 +566,9 @@ export const register: Register = (on, options) => {
         return {}
       }
       const records = await loadRecords($)
-      const lines = recentMemoryLines(records, { total: records.length, columns: bodyColumns })
+      const now = await $.clock.now()
+      const columns = Math.min(bodyColumns, LOG_MAX_COLUMNS) - LOG_PREFIX_COLUMNS
+      const lines = recentMemoryLines(records, { total: records.length, columns, offsetMinutes: localOffsetMinutes(now) })
       for (const line of lines) $.ui.log(line)
     } catch (err) {
       $.ui.log('Recent memories are unavailable right now.')

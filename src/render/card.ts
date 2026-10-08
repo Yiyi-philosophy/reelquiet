@@ -19,10 +19,14 @@ import { displayName, rarityLabel, sizeText } from './model.ts'
  * - rare+ sighted  → 1 line  (F-LOG-SIGHTED-RARE)
  * - anything else  → no lines at all ("common/uncommon 的结果：不写 transcript")
  */
-export function catchCardLines(record: CatchRecord, species?: Species | null): string[] {
+export function catchCardLines(
+  record: CatchRecord,
+  species?: Species | null,
+  offsetMinutes = 0,
+): string[] {
   if (!isRareTier(record.rarity)) return []
 
-  const card = toPublicCard(record)
+  const card = toPublicCard(record, offsetMinutes)
   const label = rarityLabel(card.rarity)
   const name = displayName(species?.common_name ?? card.species)
 
@@ -78,8 +82,9 @@ export function emitCatchCard(
   eventId: string,
   record: CatchRecord,
   species?: Species | null,
+  offsetMinutes = 0,
 ): EmittedCard {
-  const lines = catchCardLines(record, species)
+  const lines = catchCardLines(record, species, offsetMinutes)
   if (lines.length === 0) return { seen: [...seenIds], lines: [] }
 
   const gate = emitOnce(seenIds, eventId)

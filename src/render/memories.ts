@@ -47,6 +47,8 @@ export type MemoryOptions = {
   total?: number
   /** Columns available, for the F-MEM-NARROW degradation. */
   columns: number
+  /** The viewer's UTC offset in minutes (east positive), injected by register; 0 = UTC. */
+  offsetMinutes?: number
 }
 
 /**
@@ -60,7 +62,7 @@ export function recentMemoryLines(
   if (shown.length === 0) return [MEMORIES_TITLE, EMPTY_MEMORIES_LINE]
 
   const columns = Number.isFinite(opts.columns) ? Math.floor(opts.columns) : 0
-  return [header(shown.length, opts.total), ...shown.map((record) => memoryLine(record, columns))]
+  return [header(shown.length, opts.total), ...shown.map((record) => memoryLine(record, columns, opts.offsetMinutes ?? 0))]
 }
 
 function header(shown: number, total?: number): string {
@@ -76,28 +78,43 @@ function header(shown: number, total?: number): string {
  * by a placeholder. F-MEM-NARROW: when the line will not fit, the basenames go
  * first and the repo second; species, status and rarity always stay.
  */
-export function memoryLine(record: CatchRecord, columns: number): string {
-  const full = compose(record, true, true)
-  if (columns <= 0 || full.length <= columns) return full
-
-  const withoutFiles = compose(record, true, false)
-  if (withoutFiles.length <= columns) return withoutFiles
-
-  return compose(record, false, false)
+export function memoryLine(record: CatchRecord, columns: number, offsetMinutes = 0): string {
+  // F-MEM-NARROW: secondary fields go in this order until the line fits:
+  // basenames, repo, event, size. Time, species, rarity and status always stay.
+  const steps: Array<[boolean, boolean, boolean, boolean]> = [
+    [true, true, true, true],
+    [true, false, true, true],
+    [false, false, true, true],
+    [false, false, false, true],
+    [false, false, false, false],
+  ]
+  let line = ''
+  for (const [repo, files, event, size] of steps) {
+    line = compose(record, repo, files, event, size, offsetMinutes)
+    if (columns <= 0 || line.length <= columns) return line
+  }
+  return line
 }
 
-function compose(record: CatchRecord, repo: boolean, files: boolean): string {
+function compose(
+  record: CatchRecord,
+  repo: boolean,
+  files: boolean,
+  event: boolean,
+  size: boolean,
+  offsetMinutes: number,
+): string {
   const label = rarityLabel(record.rarity)
   const star = isRareTier(record.rarity) ? '★ ' : ''
 
   const parts: string[] = [
-    `${monthDayText(record.timestamp)} ${hourMinuteText(record.timestamp)}`,
+    `${monthDayText(record.timestamp, offsetMinutes)} ${hourMinuteText(record.timestamp, offsetMinutes)}`,
     `${star}${displayName(record.species)}`,
   ]
   if (label.length > 0) parts.push(label)
-  if (record.outcome === 'caught') parts.push(sizeText(record.size_cm))
+  if (size && record.outcome === 'caught') parts.push(sizeText(record.size_cm))
   parts.push(record.outcome)
-  parts.push(EVENT_COLUMN[record.event_type] ?? EVENT_COLUMN.unknown)
+  if (event) parts.push(EVENT_COLUMN[record.event_type] ?? EVENT_COLUMN.unknown)
   if (repo && record.repo.length > 0) parts.push(record.repo)
   if (files) for (const basename of record.files) parts.push(basename)
 

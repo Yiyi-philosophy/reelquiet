@@ -154,8 +154,8 @@ describe('F-MEM-NARROW', () => {
     expect(line).toContain('caught')
   })
 
-  test('narrower than that keeps species, status and rarity rather than truncating', () => {
+  test('narrower than that drops event then size, keeping time, species, rarity and status (G3)', () => {
     const line = recentMemoryLines([record()], { columns: 30 })[1]
-    expect(line).toBe(NO_REPO)
+    expect(line).toBe('10-08 23:41  ★ Common fangtooth  RARE  caught')
   })
 })
