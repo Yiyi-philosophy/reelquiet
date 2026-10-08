@@ -491,6 +491,7 @@ Accepted scope:
   - schema 测试：`PublicCatchCard` 的 schema 只允许列出的字段（`additionalProperties: false`）。
   - fixture 测试：用一条带 repo、file、path、token 样式字符串的 `CatchRecord` 做投影，断言输出里不含 repo、file、path、command、prompt 这些字段名，也不含它们的值。
   - `CatchRecord` 的 schema 同样设置 `additionalProperties: false`。
+- **`PublicCatchCard.date`**：取用户的本地日期，只保留年月日，不带时分和时区（/review 之后的 D2 决定）。这是有意的选择：卡片上的日期要和用户自己记得的"那天"一致。代价是在午夜前后，这个日期可能和 UTC 差一天，会透露一点点时区信息。
 - **GIF**：可以用人工构造的公开演示数据（演示仓库、演示文件名）。真实用户默认生成的分享卡片永远是脱敏后的版本。
 History: 推荐选项原本写的是"保存哈希后的命令指纹"；用户收紧为：指纹只放在会话内存里，并用 allowlist 投影来生成卡片。
 
