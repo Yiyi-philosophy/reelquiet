@@ -43,6 +43,7 @@ const seenAtom = atom({ plugin: 'reelquiet', key: 'seenCards' } as const, [] as 
 const shownAtAtom = atom({ plugin: 'reelquiet', key: 'resultShownAt' } as const, null as number | null)
 const retireAtom = atom({ plugin: 'reelquiet', key: 'clearResultAfterHold' } as const, false)
 
+// The worker period: also the pond's tick (design: 10 Hz).
 const TICK_MS = 100
 const RECORD_PREFIXES = ['v1:c:', 'v1:s:']
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -80,10 +81,9 @@ let lastText = ''
 let observedDraft = false
 let observedBlocked = false
 let lastCells = ''
-let ticker: { cancel: () => void } | null = null
-// Ticks persist at most once a second; every other event persists immediately.
-let lastTickPersistAt = 0
-const TICK_PERSIST_MS = 1000
+// A batch that changed state persists at once; quiet ticks at most once a second.
+let lastPersistAt = 0
+const PERSIST_MS = 1000
 const askPending = new Set<string>()
 
 // ---------------------------------------------------------------- helpers
@@ -182,28 +182,18 @@ async function persist($: any) {
     await update($, shownAtAtom, () => resultShownAt)
     await update($, retireAtom, () => clearResultAfterHold)
   } catch (err) {
-    // A refused write (for example during a draw) keeps the module copy; the next event persists again.
+    // A refused write (for example during a draw) keeps the module copy; the next batch persists again.
     $.ui.log('persist deferred: ' + String(err), { to: 'debug' })
   }
-}
-
-// Detached game work (draft, layout, reel press): never an unhandled rejection.
-function detached($: any, label: string, work: (now: number) => Promise<void>) {
-  $.clock
-    .now()
-    .then((now: number) => work(now))
-    .catch((err: unknown) => $.ui.log(label + ' failed: ' + String(err), { to: 'debug' }))
 }
 
 // Redraw: text changes rebuild the tree; raster-only changes use blit (V6).
 async function redraw($: any, now: number) {
   retireResult(now)
   const m = model(now)
-  const text = m ? toPlainText(m) : ''
   const cells = m && m.raster ? encodeCells(m) : ''
   const textOnly = m ? toPlainText({ ...m, raster: null }) + (m.meta.resultDimmed ? '\u0000dim' : '') : ''
-  const lastTextOnly = lastText
-  if (textOnly !== lastTextOnly || !bandRequestId || !m || !m.raster) {
+  if (textOnly !== lastText || !bandRequestId || !m || !m.raster) {
     lastText = textOnly
     lastCells = cells
     $.ui.invalidate('ui.render')
@@ -214,7 +204,6 @@ async function redraw($: any, now: number) {
     const r = await $.ui.blit({ requestId: bandRequestId, key: 'pond', cells })
     if (r.deny) $.ui.invalidate('ui.render')
   }
-  void text
 }
 
 function resultVisible(now: number): boolean {
@@ -222,25 +211,150 @@ function resultVisible(now: number): boolean {
   return clearResultAfterHold || now - resultShownAt <= RESULT_DIM_AFTER_MS + 1000
 }
 
-function ensureTicker($: any, now: number) {
-  const wanted = (timerOn(pond) && !isFrozen(pond)) || resultVisible(now)
-  if (wanted && !ticker) {
-    ticker = $.clock.every(TICK_MS, () => onTick($))
-  } else if (!wanted && ticker) {
-    ticker.cancel()
-    ticker = null
+// ------------------------------------------------------------ the queue
+//
+// Hooks never await game work. They push plain jobs here and go straight on to
+// next(e); one worker, started in session.start, drains the queue in order on
+// $.clock.every (the documented home for work that outlives a dispatch). A slow
+// or failing $.state / $.store therefore delays the pond, never the agent.
+
+type Job =
+  | { kind: 'init' }
+  | { kind: 'event'; event: PondEvent }
+  | { kind: 'cast'; turnId: string }
+  | { kind: 'complete'; turnId: string; aborted: boolean }
+  | { kind: 'sync' }
+
+const queue: Job[] = []
+let working = false
+let initialized = false
+let castTurnId: string | null = null
+let lastNow = 0
+
+// Inputs that only refresh state (activity, draft/layout sync) coalesce; every
+// event that can settle a fish (cast, complete, freeze, unfreeze, reel, reset)
+// is always kept, in order.
+function enqueue(job: Job) {
+  if (!enabled) return
+  const last = queue[queue.length - 1]
+  if (job.kind === 'sync' && queue.some(j => j.kind === 'sync')) return
+  if (
+    job.kind === 'event' &&
+    job.event.type === 'activity' &&
+    last?.kind === 'event' &&
+    last.event.type === 'activity' &&
+    last.event.kind === job.event.kind
+  ) {
+    return
   }
+  queue.push(job)
 }
 
-async function onTick($: any) {
+async function init($: any, now: number) {
+  sessionId = await $.session.id()
+  sessionSeed = hashString(sessionId)
+  const repo = await $.session.repo()
+  repoName = repo ? basenameOf(repo.root) ?? '' : ''
+  try {
+    const value = await $.env.get('NO_COLOR')
+    noColor = typeof value === 'string' && value.length > 0
+  } catch {
+    noColor = true
+  }
+  const saved = await read($, pondAtom)
+  pond = isPondState(saved) ? resume(saved, now) : createPondState(sessionSeed)
+  const savedSignals = await read($, signalsAtom)
+  signals =
+    savedSignals && typeof savedSignals.red === 'object' && savedSignals.red !== null
+      ? savedSignals
+      : createSignalsState()
+  const savedSeen = await read($, seenAtom)
+  seenCards = Array.isArray(savedSeen) ? savedSeen.filter(x => typeof x === 'string') : []
+  const savedShown = await read($, shownAtAtom)
+  resultShownAt = typeof savedShown === 'number' ? savedShown : null
+  heldTier = resultShownAt !== null && pond.lastResult ? pond.lastResult.tier : null
+  clearResultAfterHold = (await read($, retireAtom)) === true
+  shownResultAt = pond.lastResult ? pond.lastResult.at : null
+  try {
+    const keys: string[] = await $.store.keys()
+    detailedCount = keys.filter(k => k.startsWith('v1:c:')).length
+  } catch {
+    detailedCount = 0
+  }
+  initialized = true
+}
+
+// Runs one job; returns true when it changed game state.
+async function runJob($: any, job: Job, now: number): Promise<boolean> {
+  if (job.kind === 'init') {
+    await init($, now)
+    return true
+  }
+  if (!initialized) return false
+  if (job.kind === 'cast') {
+    castTurnId = job.turnId
+    await advance($, { type: 'cast' }, now)
+    return true
+  }
+  if (job.kind === 'complete') {
+    // A completion for a turn this pond never cast (stale, or a turn that
+    // started while ReelQuiet was off) must not settle the current one.
+    if (castTurnId !== null && job.turnId !== castTurnId) {
+      $.ui.log('complete ignored: turn ' + job.turnId + ' is not the cast turn', { to: 'debug' })
+      return false
+    }
+    castTurnId = null
+    await advance($, { type: job.aborted ? 'abort' : 'complete' }, now)
+    return true
+  }
+  if (job.kind === 'sync') {
+    let changed = false
+    if (observedDraft !== pond.isDraft) {
+      await advance($, { type: 'draftChanged', isDraft: observedDraft }, now)
+      changed = true
+    }
+    if (observedBlocked !== pond.layoutBlocked) {
+      await advance($, { type: 'layoutChanged', blocked: observedBlocked }, now)
+      changed = true
+    }
+    return changed
+  }
+  await advance($, job.event, now)
+  return true
+}
+
+// The single worker. Queued inputs always apply before the tick, so a reel or a
+// freeze that waited behind slow storage is never out-raced by elapsed time.
+async function work($: any) {
+  if (working) return
+  working = true
   try {
     const now = await $.clock.now()
-    retireResult(now)
-    if (timerOn(pond)) await advance($, { type: 'tick', now }, now)
-    else ensureTicker($, now)
-    await redraw($, now)
+    lastNow = now
+    let changed = false
+    while (queue.length > 0) {
+      const job = queue.shift() as Job
+      try {
+        if (await runJob($, job, now)) changed = true
+      } catch (err) {
+        $.ui.log('job ' + job.kind + ' failed: ' + String(err), { to: 'debug' })
+      }
+    }
+    if (!initialized) return
+    let ticked = false
+    if (timerOn(pond) && !isFrozen(pond)) {
+      await advance($, { type: 'tick', now }, now)
+      ticked = true
+    }
+    if (changed || ticked || resultVisible(now)) await redraw($, now)
+    if (changed || now - lastPersistAt >= PERSIST_MS) {
+      lastPersistAt = now
+      await persist($)
+    }
   } catch (err) {
-    $.ui.log('tick failed: ' + String(err), { to: 'debug' })
+    $.ui.log('worker failed: ' + String(err), { to: 'debug' })
+  } finally {
+    working = false
   }
 }
 
@@ -265,10 +379,6 @@ async function advance($: any, event: PondEvent, now: number) {
   })
   pond = r.state
   await applyEffects($, r.effects, now)
-  ensureTicker($, now)
-  if (event.type === 'tick' && r.effects.length === 0 && now - lastTickPersistAt < TICK_PERSIST_MS) return
-  lastTickPersistAt = now
-  await persist($)
 }
 
 async function applyEffects($: any, effects: PondEffect[], now: number) {
@@ -342,46 +452,23 @@ export const register: Register = (on, options) => {
   extraTestPatterns = typeof extra === 'string' && extra.trim() ? [extra.trim()] : []
   compilePatterns(extraTestPatterns)
 
+  // Host setup only: decide the surface, register the command, start the one
+  // worker. Every game read (state, store, env, session) runs in the worker.
   on('session.start', async ($, e, next) => {
     try {
       const surfaces = await $.session.surfaces()
       enabled = surfaces.length > 0 && surfaces.every(s => s === 'terminal')
       if (enabled) {
-        const now = await $.clock.now()
-        sessionId = await $.session.id()
-        sessionSeed = hashString(sessionId)
-        const repo = await $.session.repo()
-        repoName = repo ? basenameOf(repo.root) ?? '' : ''
-        try {
-          const value = await $.env.get('NO_COLOR')
-          noColor = typeof value === 'string' && value.length > 0
-        } catch {
-          noColor = true
-        }
-        const saved = await read($, pondAtom)
-        pond = isPondState(saved) ? resume(saved, now) : createPondState(sessionSeed)
-        const savedSignals = await read($, signalsAtom)
-        signals = savedSignals && typeof savedSignals.red === 'object' && savedSignals.red !== null ? savedSignals : createSignalsState()
-        const savedSeen = await read($, seenAtom)
-        seenCards = Array.isArray(savedSeen) ? savedSeen.filter(x => typeof x === 'string') : []
-        const savedShown = await read($, shownAtAtom)
-        resultShownAt = typeof savedShown === 'number' ? savedShown : null
-        heldTier = resultShownAt !== null && pond.lastResult ? pond.lastResult.tier : null
-        clearResultAfterHold = (await read($, retireAtom)) === true
-        shownResultAt = pond.lastResult ? pond.lastResult.at : null
-        try {
-          const keys: string[] = await $.store.keys()
-          detailedCount = keys.filter(k => k.startsWith('v1:c:')).length
-        } catch {
-          detailedCount = 0
-        }
+        queue.length = 0
+        initialized = false
+        enqueue({ kind: 'init' })
+        $.clock.every(TICK_MS, () => work($))
         await $.command.register({
           name: 'reelquiet',
           description: 'ReelQuiet: show Recent memories',
           argumentHint: 'log',
           immediate: true,
         })
-        ensureTicker($, now)
       }
     } catch (err) {
       enabled = false
@@ -390,42 +477,27 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
-    try {
-      if (enabled) {
-        const now = await $.clock.now()
-        askPending.clear()
-        await advance($, { type: 'reset' }, now)
-        signals = createSignalsState()
-        await redraw($, now)
-      }
-    } catch (err) {
-      $.ui.log('reset failed: ' + String(err), { to: 'debug' })
+  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, ($, e, next) => {
+    if (enabled) {
+      askPending.clear()
+      signals = createSignalsState()
+      castTurnId = null
+      enqueue({ kind: 'event', event: { type: 'reset' } })
     }
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('turn.start', async ($, e, next) => {
-    try {
-      if (enabled && castAllowed(e as { agentId?: string | null })) {
-        const now = await $.clock.now()
-        askPending.clear()
-        recentFiles = []
-        await advance($, { type: 'cast' }, now)
-        await redraw($, now)
-      }
-    } catch (err) {
-      $.ui.log('cast failed: ' + String(err), { to: 'debug' })
+  on('turn.start', ($, e, next) => {
+    if (enabled && castAllowed(e as { agentId?: string | null })) {
+      askPending.clear()
+      recentFiles = []
+      enqueue({ kind: 'cast', turnId: e.turnId })
     }
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('turn.step', async function* ($, e, next) {
-    try {
-      if (enabled) await advance($, { type: 'activity', kind: 'model-request' }, await $.clock.now())
-    } catch (err) {
-      $.ui.log('activity failed: ' + String(err), { to: 'debug' })
-    }
+    enqueue({ kind: 'event', event: { type: 'activity', kind: 'model-request' } })
     return yield* next(e)
   }).catch(async function* ($, e, next) {
     return yield* next(e)
@@ -433,15 +505,9 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
-    try {
-      if (enabled && !e.agentId) {
-        const now = await $.clock.now()
-        askPending.clear()
-        await advance($, { type: e.isAborted ? 'abort' : 'complete' }, now)
-        await redraw($, now)
-      }
-    } catch (err) {
-      $.ui.log('complete failed: ' + String(err), { to: 'debug' })
+    if (enabled && !e.agentId) {
+      askPending.clear()
+      enqueue({ kind: 'complete', turnId: e.turnId, aborted: e.isAborted })
     }
     return r
   }).catch(($, e, next) => next(e))
@@ -449,15 +515,9 @@ export const register: Register = (on, options) => {
   // D11: a permission ask freezes this call until its next(e) settles (conservative scope).
   on('tool.check', async ($, e, next) => {
     const r = await next(e)
-    try {
-      if (enabled && r.decision === 'ask' && e.tool_use_id) {
-        askPending.add(e.tool_use_id)
-        const now = await $.clock.now()
-        await advance($, { type: 'freeze', id: e.tool_use_id }, now)
-        await redraw($, now)
-      }
-    } catch (err) {
-      $.ui.log('freeze failed: ' + String(err), { to: 'debug' })
+    if (enabled && r.decision === 'ask' && e.tool_use_id) {
+      askPending.add(e.tool_use_id)
+      enqueue({ kind: 'event', event: { type: 'freeze', id: e.tool_use_id } })
     }
     return r
   }).catch(($, e, next) => next(e))
@@ -465,128 +525,70 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const id = e.tool_use_id
     const agentId = (e as { agentId?: string }).agentId
-    const isQuestion = e.tool === 'AskUserQuestion'
-    try {
-      if (enabled) {
-        const now = await $.clock.now()
-        if (EDIT_TOOLS.has(e.tool)) {
-          const name = basenameOf((e as { file_path?: unknown }).file_path)
-          if (name) recentFiles = [name, ...recentFiles.filter(f => f !== name)].slice(0, MAX_FILES)
-        }
-        await advance($, { type: 'activity', kind: EDIT_TOOLS.has(e.tool) ? 'edit' : 'tool-call' }, now)
-        if (isQuestion) {
-          askPending.add(id)
-          await advance($, { type: 'freeze', id }, now)
-          await redraw($, now)
-        }
+    if (enabled) {
+      if (EDIT_TOOLS.has(e.tool)) {
+        const name = basenameOf((e as { file_path?: unknown }).file_path)
+        if (name) recentFiles = [name, ...recentFiles.filter(f => f !== name)].slice(0, MAX_FILES)
       }
-    } catch (err) {
-      $.ui.log('tool.call pre failed: ' + String(err), { to: 'debug' })
+      enqueue({ kind: 'event', event: { type: 'activity', kind: EDIT_TOOLS.has(e.tool) ? 'edit' : 'tool-call' } })
+      if (e.tool === 'AskUserQuestion') {
+        askPending.add(id)
+        enqueue({ kind: 'event', event: { type: 'freeze', id } })
+      }
     }
 
     let r
     try {
       r = await next(e)
     } finally {
-      try {
-        if (enabled && askPending.has(id)) {
-          const now = await $.clock.now()
-          await advance($, { type: 'unfreeze', id }, now)
-          askPending.delete(id)
-          await redraw($, now)
-        }
-      } catch (err) {
-        $.ui.log('unfreeze failed: ' + String(err), { to: 'debug' })
-      }
+      if (askPending.delete(id)) enqueue({ kind: 'event', event: { type: 'unfreeze', id } })
     }
 
-    try {
-      if (enabled && e.tool === 'Bash') {
-        const command = (e as { command?: unknown }).command
-        if (typeof command === 'string') {
+    if (enabled && e.tool === 'Bash') {
+      const command = (e as { command?: unknown }).command
+      if (typeof command === 'string') {
+        try {
           const isError = Boolean((r as { isError?: boolean } | undefined)?.isError)
           const out = observeCommand(signals, { sessionId, command, isError, agentId }, extraTestPatterns)
           signals = out.state
-          if (out.signals.length > 0) {
-            await advance($, { type: 'activity', kind: 'tests-green' }, await $.clock.now())
-          }
+          if (out.signals.length > 0) enqueue({ kind: 'event', event: { type: 'activity', kind: 'tests-green' } })
+        } catch {
+          // Signals are pure; a failure here only loses one red-to-green bonus.
         }
       }
-    } catch (err) {
-      $.ui.log('tool.call post failed: ' + String(err), { to: 'debug' })
     }
     return r
   }).catch(($, e, next) => next(e))
 
-  on('classic.Elicitation', async ($, e, next) => {
-    try {
-      if (enabled) {
-        const id = elicitationId(e)
-        const now = await $.clock.now()
-        await advance($, { type: 'freeze', id }, now)
-        await redraw($, now)
-      }
-    } catch (err) {
-      $.ui.log('elicitation freeze failed: ' + String(err), { to: 'debug' })
-    }
+  on('classic.Elicitation', ($, e, next) => {
+    enqueue({ kind: 'event', event: { type: 'freeze', id: elicitationId(e) } })
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('classic.ElicitationResult', async ($, e, next) => {
-    try {
-      if (enabled) {
-        const id = elicitationId(e)
-        const now = await $.clock.now()
-        await advance($, { type: 'unfreeze', id }, now)
-        await redraw($, now)
-      }
-    } catch (err) {
-      $.ui.log('elicitation unfreeze failed: ' + String(err), { to: 'debug' })
-    }
+  on('classic.ElicitationResult', ($, e, next) => {
+    enqueue({ kind: 'event', event: { type: 'unfreeze', id: elicitationId(e) } })
     return next(e)
   }).catch(($, e, next) => next(e))
 
   // V1: draft state, read-only; the hint line is passed through unchanged.
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    try {
-      observedDraft = e.props.isDraft
-      if (enabled && observedDraft !== pond.isDraft) {
-        $.clock.after(0, () => {
-          detached($, 'draft', async now => {
-            // Apply the newest observed draft state, not the one captured at schedule time.
-            if (observedDraft === pond.isDraft) return
-            await advance($, { type: 'draftChanged', isDraft: observedDraft }, now)
-            await redraw($, now)
-          })
-        })
-      }
-    } catch (err) {
-      $.ui.log('draft observe failed: ' + String(err), { to: 'debug' })
-    }
+  on('ui.render', { component: 'PromptHint' }, ($, e, next) => {
+    observedDraft = e.props.isDraft
+    if (observedDraft !== pond.isDraft) enqueue({ kind: 'sync' })
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (!enabled || e.surface !== 'terminal' || e.props.hasSurvey) {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
+    if (!enabled || !initialized || e.surface !== 'terminal' || e.props.hasSurvey) {
       bandRequestId = ''
       return next(e)
     }
-    const now = await $.clock.now()
     bodyColumns = e.props.bodyColumns
     bandRequestId = e.requestId
-    const m = model(now)
+    const m = model(lastNow)
     if (!m) return next(e)
 
     observedBlocked = m.meta.reelBlockedByLayout
-    if (observedBlocked !== pond.layoutBlocked) {
-      $.clock.after(0, () => {
-        detached($, 'layout', async t => {
-          if (observedBlocked === pond.layoutBlocked) return
-          await advance($, { type: 'layoutChanged', blocked: observedBlocked }, t)
-          await redraw($, t)
-        })
-      })
-    }
+    if (observedBlocked !== pond.layoutBlocked) enqueue({ kind: 'sync' })
     lastText = toPlainText({ ...m, raster: null }) + (m.meta.resultDimmed ? '\u0000dim' : '')
     const cells = m.raster ? encodeCells(m) : ''
     lastCells = cells
@@ -611,12 +613,7 @@ export const register: Register = (on, options) => {
             label={m.reelButton.label}
             hotkey="1"
             plain
-            onPress={() =>
-              detached($, 'reel', async t => {
-                await advance($, { type: 'reel' }, t)
-                await redraw($, t)
-              })
-            }
+            onPress={() => enqueue({ kind: 'event', event: { type: 'reel' } })}
           />
         ) : null}
       </Box>
@@ -632,7 +629,8 @@ export const register: Register = (on, options) => {
     )
   }).catch(($, e, next) => next(e))
 
-  // D14: Recent memories, a read-only product probe. Returns {} so nothing reaches Claude.
+  // D14: Recent memories, a read-only product probe the user runs. Returns {} so
+  // nothing reaches Claude. Not on any agent path, so it reads the store directly.
   on('command.run', { command: 'reelquiet' }, async ($, e) => {
     try {
       if ((e.args ?? '').trim() !== 'log') {
