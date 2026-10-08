@@ -25,3 +25,4 @@
 | OQ6（剩余部分） | 更精确的"权限已处理"信号，用来减少多冻结的时间 | DEFERRED_TO_STAGE_2 | 探针测出多冻结的实际时长 | 不能阻塞 Agent；只观察，出错时放行 | D11 |
 | — | Journal/FishDex（从 Recent memories 发展而来） | DEFERRED_TO_STAGE_2 | 自用期间 Recent memories 的使用数据 | 遵循 D12 的白名单；分享卡片只能通过 allowlist 投影生成 | D12、D14 |
 | — | Extract shared visual contracts into DESIGN.md（把 V-MONO、V-LABEL、V-COLOR 的 token 和状态文案抽出来） | DEFERRED_TO_STAGE_2 | Stage 2 的 Gate 已通过；已正式批准第二个独立界面（FishDex 面板或 Desktop）；确实有多个界面需要共用视觉规范 | 必须继承 V-MONO、V-LABEL、V-COLOR；保留单色优先、稀有度文字标签、低频动画、窄屏降级这几条规则；不能借此新增主题系统，也不能重新设计已冻结的交互。抽取完成后，DESIGN.md 成为权威来源，原设计文档只保留决策背景和引用 | 设计文档 Stage 1 Visual Spec；设计评审 D11 |
+| G3-R1 | 进程重启（`--continue`、进程被杀）时，正挂在钩上或 carried 的稀有遭遇会静默丢失：`$.state` 只在单个进程内有效 | KNOWN_LIMITATION（Stage 1） | dogfood 期间确实发生过，并记录了频率 | 不得依赖 CAS 或原子租约；若引入孤儿补记，必须用确定性 key 去重，并重新评审 D1"只追加"的定义；README 已说明这一限制 | G3 冒烟测试 2026-10-08；决策 D13（G3） |
