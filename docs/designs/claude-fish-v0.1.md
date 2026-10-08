@@ -219,7 +219,8 @@ idle ──cast──▶ waiting ──bite──▶ hooked(tier, deadline)
 | 订阅的事件 | `session.start`、`turn.*`、`tool.call`、`tool.check`、`classic.Notification`、`classic.SessionStart`、`ui.render`（横条、面板，以及只观察不修改的 `AskUserQuestion`） | 只观察；除了横条和面板，不改写任何事件 |
 | `ui.render(PromptHint)` | 读取提示框是否有草稿 | 只读 `isDraft`，原样 `next(e)` 透传，不改写提示框，也不注入上下文（T1 已验证；不使用 `prompt.edit`） |
 | `userConfig` | `testCommands`：用户追加的测试命令正则 | 通过 `register(on, options)` 传入，不需要额外 API 调用 |
-| **不使用** | `http`、`process`、`model`、`prompt.submit`、`env` | — |
+| `env.get` | 只读 `NO_COLOR` 这一个变量名 | 只用于决定 Raster 是否改用默认色；值不保存也不输出；读取失败时按单色处理（V-COLOR，宿主只对 `Text` 处理了 NO_COLOR，对 `Raster` 没有处理） |
+| **不使用** | `http`、`process`、`model`、`prompt.submit`、除 `NO_COLOR` 以外的任何 env | — |
 
 **CI 检查**：
 - 运行 `claude plugin validate --strict --json`，把调用清单和上表对比，出现表外的调用就失败。
@@ -829,17 +830,247 @@ Stop: MAX_ITERATIONS
 - 并行化：2 条通道，S0 和 S1→S2 并行，S3、S4 顺序执行
 - Lake Score：4/4（D4、D7、D11、D14 选的都是完整度最高的方案）
 
+## Stage 1 Visual Spec（/plan-design-review，2026-10-08）
+
+> 范围：只把已冻结的行为转成可实现的视觉规范，不新增功能。每个带 `F-` 编号的状态都是 T4 的快照测试 fixture。纯文本单色版本是基准；彩色版本只改变强调程度，不改变信息量。
+
+### 视觉契约（已批准）
+
+| ID | 规则 | 来源 |
+|---|---|---|
+| V-MONO | **单色优先。** 状态和稀有度必须完全由文字和字形表达，颜色只做增强，不承载任何独有信息。语义优先级：状态文案 > 稀有度标签 > 字形变化 > 颜色。`!` 表示咬钩或需要注意。鱼的长度只是装饰，不能作为唯一或主要的稀有度信号。 | D2（1A） |
+| V-LABEL | 稀有度标签：common 不显示；uncommon 显示小写 `uncommon`；rare 显示 `RARE`；legendary 显示 `LEGENDARY`。只有这四档。横条、卡片、Recent memories 统一使用。 | D8 |
+| V-AMBIENT | 等待时最多显示 2 条通用鱼影，不带物种或稀有度含义，只是装饰。静态纯文本版本本身必须完整。鱼影每 2–4 秒移动一格，位置由会话种子决定，可复现。窄屏时优先去掉鱼影；冻结时停止移动；一旦咬钩就隐藏鱼影。鱼影不参与任何游戏逻辑。 | D3（2A） |
+| V-RESULT | caught 或 sighted 的结果有最短显示时间：common/uncommon 3 秒，rare 及以上 6 秒，期间不会被下一竿覆盖。之后一直显示到下一竿开始，满 60 秒后变暗。不弹 toast。只有 rare 及以上的结果会写入 transcript，每个事件只写一组。 | D4（3A） |
+| V-CARD | Catch Card 是 3 行、没有边框的 `$.ui.log`，只在 rare 及以上的 caught 时输出一次。sighted 只输出 1 行。内容只取 PublicCatchCard 的白名单字段，外加公开的学名。如果实测发现这 3 行会被其他消息打断，就降级为单行。 | D6（4bA） |
+| V-MEM | Recent memories：每条记录一行，最多 20 条，字段顺序固定。空状态的文案要温和、准确。标题只在能低成本准确统计总数时才写 `N of M`，否则写 `latest N`。 | D7（5A） |
+| V-NARROW | 横条按宽度分三档：≥70 / 40–69 / <40 列。收杆按钮优先级最高，必须完整显示。**如果按钮放不下，就暂停计时**，与有草稿时暂停是同一条路径。布局永远不会导致鱼逃走。只有一套状态机。 | D9（6A） |
+| V-COLOR | 颜色 token 跟随终端主题，只用于装饰和强调。动画：水纹每 2–4 秒移动一格，冻结时停止，不做闪烁、发光或脉冲效果。NO_COLOR 的处理见下方探针结论。 | D10（7A） |
+
+**探针结论（NO_COLOR，2026-10-08）**：设置 `NO_COLOR=1` 时，宿主会去掉 mod 里 `Text` 的颜色，但**不会去掉 `Raster` 单元格的前景色和背景色**（实测 `38;5;214` 和 `48;5;235` 仍然输出）。所以按 V-COLOR 的规定：只读取 `$.env.get("NO_COLOR")`，只用它来决定 Raster 是否改用默认色 `0x01000000`；`Text` 的颜色交给宿主处理。权限清单把 env 那一行改为"只读 `NO_COLOR` 这一个变量名，读取失败按单色处理"，README 中删掉"完全不访问 env"的说法。
+
+### 横条 fixtures（单色基线，≥70 列档，`bodyColumns` = 75）
+
+鱼塘占 39 列，Raster 共 2 行；状态区占 34 列。`1: reel in` 是平台自带的 `Button`（`plain`，`hotkey="1"`）。
+
+```
+F-BAND-IDLE        （不渲染，返回 next(e)）
+
+F-BAND-WAITING
+~~~~~~~~~~~~~~~~~~~o~~~~~~~~~~~~~~~~~~~  waiting · 0:42
+   ><>                     <><           depth 3 m
+
+F-BAND-BITE-COMMON（这一帧之后立即自动收杆）
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  ! bite
+                   ><>
+
+F-BAND-BITE-UNCOMMON
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  ! bite · uncommon
+
+F-BAND-RARE-HOOKED（可以收杆）
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  ! RARE bite · 0:14
+                   ><)))°>               1: reel in
+
+F-BAND-LEGENDARY-HOOKED
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  ! LEGENDARY bite · 0:14
+                   ><)))°>               1: reel in
+
+F-BAND-RARE-DRAFT（有草稿，计时暂停，按钮仍然显示）
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  ! RARE bite · paused
+                   ><)))°>               1: reel in
+                                         Send your draft, then reel it in.
+
+F-BAND-FROZEN（等待权限确认或提问；按钮隐藏，动画停止）
+~~~~~~~~~~~~~~~~~~~o~~~~~~~~~~~~~~~~~~~  paused · Claude needs you
+   ><>                     <><
+
+F-BAND-FROZEN-RARE（冻结时有稀有鱼挂着）
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  RARE on the line · paused
+                   ><)))°>               Claude needs you first
+
+F-BAND-CARRIED（回合已结束，进入宽限期，可以收杆）
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  ! RARE still on the line · 0:41
+                   ><)))°>               1: reel in
+
+F-BAND-CARRIED-DRAFT（draft-blocked，不计时）
+~~~~~~~~~~~~~~~~~~~!~~~~~~~~~~~~~~~~~~~  ! RARE still on the line
+                   ><)))°>               1: reel in
+                                         Send your draft, then reel it in.
+
+F-BAND-CAUGHT-COMMON（最短显示 3 秒）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  caught · Atlantic mackerel
+                                         31 cm
+
+F-BAND-CAUGHT-RARE（最短显示 6 秒）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ★ caught · Common fangtooth
+                                         14 cm · RARE
+
+F-BAND-SIGHTED（最短显示 6 秒）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  sighted · Common fangtooth
+                                         slipped away · RARE · noted
+
+F-BAND-RESULT-DIM（60 秒后，与上面内容相同，整体使用 dimColor）
+
+F-BAND-ESCAPED-COMMON：不显示任何结果，回到 WAITING 或 IDLE。
+```
+
+**窄屏档：**
+
+```
+F-BAND-60COL-WAITING（40–69 列：鱼塘 16 列，没有鱼影）
+~~~~~~~o~~~~~~~~  waiting · 0:42
+
+F-BAND-60COL-RARE
+~~~~~~~!~~~~~~~~  ! RARE · 0:14  1: reel
+
+F-BAND-36COL-WAITING（<40 列：只有文字）
+waiting · 0:42
+
+F-BAND-36COL-RARE
+! RARE · 0:14  1: reel
+
+F-BAND-TOO-NARROW（按钮放不下，计时暂停，不会逃走）
+! RARE · paused
+```
+
+**边界 fixture：**
+- `F-RESULT-MIN-HOLD`：在最短显示时间内触发了下一竿，横条仍然显示结果。
+- `F-RESULT-DEDUPE`：同一事件 id 第二次出现时，transcript 不重复写入。
+- `F-COLOR-*`：上面每个 fixture 的彩色版本，去掉 ANSI 后必须和单色版逐字相同。
+
+### Catch Card 与 transcript fixtures
+
+```
+F-CARD-RARE（3 次 $.ui.log，按顺序，每个事件只输出一次）
+● reelquiet: ★ RARE CATCH · Common fangtooth
+● reelquiet: Anoplogaster cornuta · 14 cm
+● reelquiet: caught as tests turned green · 2026-10-08
+
+F-CARD-LEGENDARY
+● reelquiet: ★ LEGENDARY CATCH · <common name>
+● reelquiet: <scientific name> · <size>
+● reelquiet: <generalized event> · <date>
+
+F-LOG-SIGHTED-RARE（1 行）
+● reelquiet: RARE sighting · Common fangtooth · slipped away · 2026-10-08
+
+F-CARD-NARROW：内容不变；平台自动折行，不加边框，所以不会出现框线被截断。
+common/uncommon 的结果：不写 transcript。
+```
+
+### Recent memories fixtures（`/reelquiet log`）
+
+```
+F-MEM-EMPTY
+● reelquiet: Recent memories
+● reelquiet: Nothing here yet. Catches and rare sightings will appear here gradually as Claude works.
+
+F-MEM-SOME（字段顺序：日期时间、物种、稀有度、体长（仅 caught）、状态、事件、仓库、basename）
+● reelquiet: Recent memories · latest 3
+● reelquiet: 10-08 23:41  ★ Common fangtooth  RARE  14 cm  caught  tests turned green  claude-fish  pagination.ts
+● reelquiet: 10-08 22:05  Atlantic mackerel  31 cm  caught  turn complete  claude-fish  pond.ts
+● reelquiet: 10-08 21:10  ★ Common fangtooth  RARE  sighted  edit  claude-fish
+
+F-MEM-20 / F-MEM-OVER-20：最多 20 行，按时间倒序。
+F-MEM-MISSING-FIELDS：没有 basename 或 repo 时直接省略，不显示占位符。
+F-MEM-NARROW：依次删除 basename、repo，保留物种、状态和稀有度。
+```
+
+### 色板（V-COLOR）
+
+| token | 用途 | 值 |
+|---|---|---|
+| `water.surface` / `water.mid` / `water.deep` | Raster 背景 | `#0f3b47` / `#0b2a3a` / `#08182a` |
+| `fish.common` | 装饰鱼影、普通鱼 | `#5f8f99` |
+| `fish.rare` | 稀有及以上的鱼形 | `#ffb300`（琥珀色，只用于强调） |
+| `status.text` | 状态文字 | 主题默认色；结果变暗时用 `dimColor` |
+| `status.attention` | `!` 和稀有度标签 | 主题默认色加 `bold`，不另外指定颜色，保证浅色主题下的对比度 |
+
+NO_COLOR 或读取失败时：Raster 全部用 `0x01000000`（终端默认色），`Text` 不设置 `color`。
+
+### 用户旅程（storyboard）
+
+| 步骤 | 用户在做什么 | 感受 | 对应规范 |
+|---|---|---|---|
+| 1 | 提交任务 | 正常工作 | 抛竿后横条出现 WAITING，安静 |
+| 2 | 等 Claude 干活 | 余光里有点动静，不被打扰 | V-AMBIENT，2–4 秒才动一下 |
+| 3 | 稀有鱼咬钩 | 小小的心跳 | `! RARE bite`，加上 `1: reel in` |
+| 4a | 按 1 | 有收获的满足感 | CAUGHT-RARE 显示 6 秒，并出 3 行卡片 |
+| 4b | 正在打字 | 不担心错过 | `Send your draft, then reel it in.`，计时暂停 |
+| 4c | 没注意到 | 有点遗憾，但会记一笔 | SIGHTED，写入 transcript 1 行 |
+| 5 | 回合结束 | 回来就能看到结果 | CARRIED 宽限期 |
+| 6 | 晚上回顾 | "我今天钓到了这些" | Recent memories |
+
+### Pass 4 litmus（判定为 OPERATE / App UI 界面）
+没有触发任何硬性否决。卡片：不使用（只有 3 行文本）。发光、渐变文字、脉冲：明确禁止。单一视觉锚点：`!` 加上稀有度标签。只靠扫读能否看懂：能，每个状态都只有一行主文案。
+
+### NOT in scope（这次设计评审）
+- 可以重复查看、分享的收藏卡片，`/reelquiet card` 命令：放到 Stage 2。
+- 主题配置、动画配置：明确不做。
+- DESIGN.md：放到 Stage 2，等出现第二个界面时再说（已记在 TODOS 索引里）。
+- 面板、Desktop、FishDex、声音：放到 Stage 2。
+- 第五档稀有度 EPIC：评审过程中写错了，不是需求，已经清理掉。
+
+### What already exists
+- 平台 `Button`（`plain`、`hotkey`）：自带 `1: label` 的样式，直接用。
+- `Text` 的 `dimColor` / `bold`：跟随终端主题，用来表示状态强弱。
+- `Raster` 加 `blit`（T1 V6 验证过）：画水体和鱼形。
+- `$.ui.log`：每次调用画一行，行首带插件名前缀，模型读不到（本轮探针验证过）。
+- T3 core 里的 `reelAvailable`、`reelActionable`、`lastResult`、`deadlineAt`：渲染器只读这些，不另外维护状态。
+
+## Implementation Tasks（设计评审）
+- [ ] **D-T1（P1，人工约 1 天 / CC 约 1h）**：T4 `src/render/band.ts` 输出 RenderModel，覆盖全部 `F-BAND-*` 状态和三档宽度，按钮放不下时给出一个信号，让核心暂停计时。
+  - 来源：V-MONO、V-AMBIENT、V-RESULT、V-NARROW
+  - 验证：`claude plugin test`；每个 fixture 都写一份纯文本快照
+- [ ] **D-T2（P1，约 2h / 约 15min）**：在 T3 core 增加"按钮放不下 → 视为不可收杆"的输入。走 D13 现有的暂停路径，不新增状态。
+  - 来源：V-NARROW
+  - 验证：pond 测试补一条 `reelBlockedByLayout`
+- [ ] **D-T3（P1，约 2h / 约 15min）**：实现 `src/render/card.ts` 和 `memories.ts`，覆盖 3 行卡片、sighted 单行、Recent memories 的空状态、截断、缺字段、窄屏几种情况；按事件 id 去重。
+  - 来源：V-CARD、V-MEM
+  - 验证：`F-CARD-*`、`F-MEM-*` 快照
+- [ ] **D-T4（P2，约 2h / 约 15min）**：色板 token 和 NO_COLOR 处理。Raster 改用默认色，只调用 `$.env.get("NO_COLOR")`。CI 增加 env 白名单，README 改掉"不访问 env"的说法。
+  - 来源：V-COLOR、NO_COLOR 探针
+  - 验证：`F-COLOR-*` 去掉 ANSI 后和单色快照完全一致；validate 只出现 `env.get`
+- [ ] **D-T5（P2，约 30min / 约 5min）**：在 T5 实现结果最短显示时间（3s / 6s），避免下一竿覆盖结果。
+  - 来源：V-RESULT
+  - 验证：`F-RESULT-MIN-HOLD`
+
+### Design review completion summary
+```
+  +====================================================================+
+  |         DESIGN PLAN REVIEW — COMPLETION SUMMARY                    |
+  +====================================================================+
+  | System Audit         | 没有 DESIGN.md；UI 只有横条、3 行卡片、日志      |
+  | Step 0               | 3/10；按用户指定的 7 个优先级逐项处理            |
+  | Pass 1  (Info Arch)  | 3/10 → 9/10（F-BAND 线框、字段顺序）            |
+  | Pass 2  (States)     | 5/10 → 9/10（共 26 个 fixture）                 |
+  | Pass 3  (Journey)    | 4/10 → 8/10（storyboard、结果显示时长）          |
+  | Pass 4  (AI Slop)    | 6/10 → 9/10（没有卡片，不用发光或脉冲）          |
+  | Pass 5  (Design Sys) | 1/10 → 8/10（token 表；DESIGN.md 放到 Stage 2） |
+  | Pass 6  (Responsive) | 2/10 → 9/10（三档宽度、NO_COLOR、单色优先）      |
+  | Pass 7  (Decisions)  | 10 项已解决，0 项推迟                           |
+  +--------------------------------------------------------------------+
+  | NOT in scope         | 已写（5 项）                                    |
+  | What already exists  | 已写                                            |
+  | TODOS.md updates     | 提出 1 项（DESIGN.md 索引条目），已采纳           |
+  | Approved Mockups     | 0（designer 没有 API key，改用字符级 fixture）   |
+  | Decisions made       | 10                                             |
+  | Decisions deferred   | 0                                              |
+  | Overall design score | 1/10 → 8/10                                    |
+  +====================================================================+
+```
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Outside Review | codex（gpt-6-astra），由 /plan-eng-review 调用 | Independent 2nd opinion | 1 | completed | 5 条发现：3 条事实修正，2 条已决策 |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN（问题已映射为任务 T1–T8，没有未决项） | 15 个问题，0 个严重缺口 |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| Outside Review | codex（gpt-6-astra），通过 /plan-eng-review 运行 | Independent 2nd opinion | 1 | completed | 5 条发现，均已处理 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN | 15 个问题，0 个严重缺口（都已拆成 T1–T8） |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | CLEAR | 分数 1/10 → 8/10，做了 10 个决定 |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
-- **OUTSIDE COVERAGE:** codex，plan-review 阶段，已完成，提出 5 条（O1–O5）。
-- **VERDICT:** Eng Review 已完成，所有决策都已定稿，问题都映射成了 T1–T8 实现任务。先做 T1 探针，它会决定 D-DRAFT 和 D-FALLBACK 用哪一条路径。CEO 和 Design 评审都还没做（可选）。
+- **OUTSIDE COVERAGE:** codex，plan-review 阶段已完成（eng）；design 阶段：用户没有选择额外的外部视角，所以没跑。
+- **VERDICT:** DESIGN 已通过，所有 Stage 1 的视觉状态都有对应的快照 fixture。Eng Review 记录的是"问题已拆成任务"，代码写完后用 `/review` 做 diff 评审，结果才会变成 CLEAR。
 
 NO UNRESOLVED DECISIONS

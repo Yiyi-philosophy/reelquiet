@@ -24,3 +24,4 @@
 | — | reflog 提交奖励（包括 worktree、bare 仓库、超过 4 MiB 等边界情况）；`/reelquiet export` | DEFERRED_TO_STAGE_2 | 奖励参数确定之后 | 只能用 `fs.read`/`fs.stat` 读取 reflog，不执行 `git`；Stage 1 不访问任何文件 | D7 |
 | OQ6（剩余部分） | 更精确的"权限已处理"信号，用来减少多冻结的时间 | DEFERRED_TO_STAGE_2 | 探针测出多冻结的实际时长 | 不能阻塞 Agent；只观察，出错时放行 | D11 |
 | — | Journal/FishDex（从 Recent memories 发展而来） | DEFERRED_TO_STAGE_2 | 自用期间 Recent memories 的使用数据 | 遵循 D12 的白名单；分享卡片只能通过 allowlist 投影生成 | D12、D14 |
+| — | Extract shared visual contracts into DESIGN.md（把 V-MONO、V-LABEL、V-COLOR 的 token 和状态文案抽出来） | DEFERRED_TO_STAGE_2 | Stage 2 的 Gate 已通过；已正式批准第二个独立界面（FishDex 面板或 Desktop）；确实有多个界面需要共用视觉规范 | 必须继承 V-MONO、V-LABEL、V-COLOR；保留单色优先、稀有度文字标签、低频动画、窄屏降级这几条规则；不能借此新增主题系统，也不能重新设计已冻结的交互。抽取完成后，DESIGN.md 成为权威来源，原设计文档只保留决策背景和引用 | 设计文档 Stage 1 Visual Spec；设计评审 D11 |
