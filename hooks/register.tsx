@@ -11,6 +11,7 @@ import type { Register } from 'claude-code'
 import {
   createPondState,
   isFrozen,
+  reelActionable,
   reelAvailable,
   resume,
   step,
@@ -19,6 +20,7 @@ import {
   type PondEvent,
   type PondState,
 } from '../src/core/pond.ts'
+import { createDraftGate, gateDraft } from '../src/core/draft-gate.ts'
 import { encounterDatePrefix, type CatchRecord } from '../src/core/records.ts'
 import {
   castAllowed,
@@ -79,6 +81,8 @@ let bandRequestId = ''
 let lastText = ''
 // Latest host observations; detached work applies these, never a stale capture.
 let observedDraft = false
+// V2: the reel hotkey's own digit reads as a draft for ~400 ms; see draft-gate.ts.
+let draftGate = createDraftGate()
 let observedBlocked = false
 let lastCells = ''
 // A batch that changed state persists at once; quiet ticks at most once a second.
@@ -308,11 +312,8 @@ async function runJob($: any, job: Job, now: number): Promise<boolean> {
     return true
   }
   if (job.kind === 'sync') {
+    // Draft changes go through the settle gate in work(); this job only wakes it.
     let changed = false
-    if (observedDraft !== pond.isDraft) {
-      await advance($, { type: 'draftChanged', isDraft: observedDraft }, now)
-      changed = true
-    }
     if (observedBlocked !== pond.layoutBlocked) {
       await advance($, { type: 'layoutChanged', blocked: observedBlocked }, now)
       changed = true
@@ -341,8 +342,18 @@ async function work($: any) {
       }
     }
     if (!initialized) return
+    // After the queue, so a reel the hotkey pressed has landed before its digit is judged.
+    const gated = gateDraft(draftGate, observedDraft, pond.isDraft, reelActionable(pond), now)
+    draftGate = gated.gate
+    const draft = gated.decision
+    if (draft.kind === 'apply') {
+      await advance($, { type: 'draftChanged', isDraft: draft.isDraft }, now)
+      changed = true
+    } else if (draft.kind === 'release') {
+      pond = resume(pond, now)
+    }
     let ticked = false
-    if (timerOn(pond) && !isFrozen(pond)) {
+    if (timerOn(pond) && !isFrozen(pond) && draft.kind !== 'hold') {
       await advance($, { type: 'tick', now }, now)
       ticked = true
     }
@@ -461,6 +472,7 @@ export const register: Register = (on, options) => {
       enabled = surfaces.length > 0 && surfaces.every(s => s === 'terminal')
       if (enabled) {
         queue.length = 0
+        draftGate = createDraftGate()
         initialized = false
         enqueue({ kind: 'init' })
         $.clock.every(TICK_MS, () => work($))

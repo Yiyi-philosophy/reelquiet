@@ -17,10 +17,12 @@ type HostOptions = {
   // Make every $.store / $.state write take this long (ms of mock time), or fail.
   slowWritesMs?: number
   failStateSetOnce?: boolean
+  sessionId?: string
+  now?: number
 }
 
 function host(on: any, opts: HostOptions = {}) {
-  const clock = mock.clock(on, { now: T0 })
+  const clock = mock.clock(on, { now: opts.now ?? T0 })
   if (opts.slowWritesMs) {
     const mem: Record<string, unknown> = {}
     on('store.keys', () => ({ value: Object.keys(mem) }))
@@ -49,7 +51,7 @@ function host(on: any, opts: HostOptions = {}) {
     })
   }
   on('session.surfaces', () => ({ value: ['terminal'] }))
-  on('session.id', () => ({ value: 'test-session' }))
+  on('session.id', () => ({ value: opts.sessionId ?? 'test-session' }))
   on('session.repo', () => ({ value: { root: '/work/demo-repo', remote: null, internal: false } }))
   on('env.get', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -193,4 +195,68 @@ test('the queue recovers after a failed state write', async ($, on) => {
   await $.turn.start({ text: 'go', turnId: 't1' } as never)
   await clock.advance(200)
   expect(await band($)).toContain('waiting')
+})
+
+// V2 regression (draft-gate.ts). With default params and real species the
+// fangtooth needs a night cast that has sunk past 120 s; this seed's first bite
+// is that rare fish (found by replaying the core with the same session hash).
+const NIGHT = Date.UTC(2026, 9, 8, 23, 0, 0)
+const RARE_SEED = 'night-390'
+
+async function hookedRare($: any, on: any) {
+  const clock = host(on, { sessionId: RARE_SEED, now: NIGHT })
+  on('tool.call', () => ({ result: 'ok' }))
+  await startSession($, clock)
+  await $.turn.start({ text: 'go', turnId: 't1' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  for (let i = 0; i < 300 && !(await band($)).includes('RARE bite'); i++) await clock.advance(1000)
+  expect(await band($)).toContain('RARE bite')
+  return clock
+}
+
+async function draft($: any, isDraft: boolean) {
+  const hint = await $.ui.mount({
+    plugin: 'reelquiet',
+    surface: 'terminal',
+    component: 'PromptHint',
+    props: { isDraft, isWorking: true, hint: '' },
+  })
+  await hint.drawn()
+}
+
+test('V2: the reel hotkey digit never shows the draft hint', async ($, on) => {
+  const clock = await hookedRare($, on)
+  // The bare `1` sits in the prompt as a draft until the hotkey fires (~410 ms).
+  await draft($, true)
+  for (let t = 0; t < 400; t += 100) {
+    await clock.advance(100)
+    const text = await band($)
+    expect(text).not.toContain('paused')
+    expect(text).not.toContain('Send your draft')
+  }
+  const ui = await $.ui.mount({ plugin: 'reelquiet', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'reel' })
+  await draft($, false)
+  await clock.advance(200)
+  expect(await band($)).toContain('caught')
+})
+
+test('V2: real typing during a rare bite still pauses it, after the settle', async ($, on) => {
+  const clock = await hookedRare($, on)
+  await draft($, true)
+  await clock.advance(1000)
+  const text = await band($)
+  expect(text).toContain('paused')
+  expect(text).toContain('Send your draft, then reel it in.')
+})
+
+test('V2: the settle hold does not spend the rare window', async ($, on) => {
+  const clock = await hookedRare($, on)
+  const before = (await band($)).match(/bite · 0:(\d\d)/)?.[1]
+  await draft($, true)
+  await clock.advance(400)
+  await draft($, false)
+  await clock.advance(100)
+  const after = (await band($)).match(/bite · 0:(\d\d)/)?.[1]
+  expect(after).toBe(before)
 })
