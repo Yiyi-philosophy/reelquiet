@@ -19,6 +19,8 @@ type HostOptions = {
   failStateSetOnce?: boolean
   sessionId?: string
   now?: number
+  // Collects every transcript row the plugin writes with $.ui.log.
+  logs?: string[]
 }
 
 function host(on: any, opts: HostOptions = {}) {
@@ -54,7 +56,10 @@ function host(on: any, opts: HostOptions = {}) {
   on('session.id', () => ({ value: opts.sessionId ?? 'test-session' }))
   on('session.repo', () => ({ value: { root: '/work/demo-repo', remote: null, internal: false } }))
   on('env.get', () => ({ value: undefined }))
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', (_$: unknown, e: unknown) => {
+    opts.logs?.push(typeof e === 'string' ? e : JSON.stringify(e))
+    return { value: undefined }
+  })
   on('ui.toast', () => ({ value: undefined }))
   on('session.start', (_$: unknown, e: unknown) => e)
   on('command.register', () => ({ value: undefined }))
@@ -259,4 +264,24 @@ test('V2: the settle hold does not spend the rare window', async ($, on) => {
   await clock.advance(100)
   const after = (await band($)).match(/bite · 0:(\d\d)/)?.[1]
   expect(after).toBe(before)
+})
+
+test('a rare caught right after red -> green carries the tests-green memory', async ($, on) => {
+  const lines: string[] = []
+  const clock = host(on, { sessionId: RARE_SEED, now: NIGHT, logs: lines })
+  let green = false
+  on('tool.call', (_$: unknown, e: { command?: string }) =>
+    e.command === 'make test' && !green ? { result: 'Exit code 2', isError: true } : { result: 'ok' },
+  )
+  await startSession($, clock)
+  await $.turn.start({ text: 'fix it', turnId: 't1' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+  for (let i = 0; i < 300 && !(await band($)).includes('RARE bite'); i++) await clock.advance(1000)
+  green = true
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+  await clock.advance(100)
+  const ui = await $.ui.mount({ plugin: 'reelquiet', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'reel' })
+  await clock.advance(200)
+  expect(lines.join('\n')).toContain('caught as tests turned green')
 })

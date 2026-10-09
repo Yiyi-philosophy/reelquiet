@@ -553,6 +553,9 @@ export const register: Register = (on, options) => {
     let r
     try {
       r = await next(e)
+    } catch (err) {
+      if (enabled && e.tool === 'Bash') $.ui.log('tool.call: Bash next() rejected', { to: 'debug' })
+      throw err
     } finally {
       if (askPending.delete(id)) enqueue({ kind: 'event', event: { type: 'unfreeze', id } })
     }
@@ -563,6 +566,10 @@ export const register: Register = (on, options) => {
         try {
           const isError = Boolean((r as { isError?: boolean } | undefined)?.isError)
           const out = observeCommand(signals, { sessionId, command, isError, agentId }, extraTestPatterns)
+          // Diagnostics for dogfood: outcome only, never the command text (D12).
+          if (out.state !== signals || out.signals.length > 0) {
+            $.ui.log('signal: test command ' + (isError ? 'red' : 'green') + (out.signals.length > 0 ? ' -> tests-green' : ''), { to: 'debug' })
+          }
           signals = out.state
           if (out.signals.length > 0) enqueue({ kind: 'event', event: { type: 'activity', kind: 'tests-green' } })
         } catch {

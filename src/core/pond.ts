@@ -490,6 +490,11 @@ function onUnfreeze(s: PondState, id: string, ctx: PondCtx, effects: PondEffect[
 }
 
 function onActivity(s: PondState, kind: ActivityKind): PondState {
+  // A model request keeps the coding context alive but is not an event of its
+  // own (D12 has no such type): the memory stays the last concrete thing that
+  // happened. Otherwise the request that reads a green test run would overwrite
+  // "tests turned green" with "a tool run" before anyone could reel.
+  if (kind === 'model-request') return { ...s, contextActive: true }
   const eventType: ControlledEventType =
     kind === 'tests-green' ? 'tests-green' : kind === 'edit' ? 'edit' : 'tool-call'
   return { ...s, contextActive: true, lastEventType: eventType }

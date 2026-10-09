@@ -561,3 +561,38 @@ describe('D-T2 / V-NARROW: a reel button that cannot fit pauses the same way a d
     expect(h.state.phase).toBe('carried')
   })
 })
+
+describe('work memory: the event a catch remembers', () => {
+  test('the model request that reads a green run does not overwrite tests-green', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'activity', kind: 'tests-green' })
+    h.send({ type: 'activity', kind: 'model-request' })
+    const caught = records(h.send({ type: 'reel' }))
+    expect(caught[0].event_type).toBe('tests-green')
+  })
+
+  test('an edit survives the model request that follows it', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'activity', kind: 'edit' })
+    h.send({ type: 'activity', kind: 'model-request' })
+    expect(records(h.send({ type: 'reel' }))[0].event_type).toBe('edit')
+  })
+
+  test('the next real tool call still replaces it', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    hookRare(h)
+    h.send({ type: 'activity', kind: 'tests-green' })
+    h.send({ type: 'activity', kind: 'tool-call' })
+    expect(records(h.send({ type: 'reel' }))[0].event_type).toBe('tool-call')
+  })
+
+  test('a model request still makes the coding context active (D9)', () => {
+    const h = makeHarness({ species: [RARE_FISH] })
+    h.send({ type: 'cast' })
+    h.send({ type: 'activity', kind: 'model-request' })
+    expect(h.state.contextActive).toBe(true)
+    expect(h.state.lastEventType).toBe('turn-start')
+  })
+})
