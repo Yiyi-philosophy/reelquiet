@@ -1,1 +1,4 @@
 .claude-plugin/types/
+
+# Unmasked demo recordings never enter git (docs/demo/README.md, Privacy).
+*.raw.cast

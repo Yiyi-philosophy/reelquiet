@@ -48,3 +48,17 @@ G2 的覆盖（mock.clock / mock.store）如下：
 - `$.state` 写入失败一次之后，队列能继续处理后续任务。
 
 权限确认（`tool.check` 返回 ask）只能在实机上触发，因为测试工具里的 `$.tool.call` 不会触发 `tool.check`，所以这一项由上面的 R2 和 R3 覆盖。
+
+## Live Smoke：收杆热键稳定期 + 工作记忆修复（`5bcddc8` + `63a4332`，2026-10-09）
+
+GIF 草稿验收时发现两个问题，修复后重跑。隔离方式同 demo 录制：`/tmp` 下的副本，ReelQuiet store 录前移走、录后恢复（已逐字节比对）。
+
+| # | 场景 | 环境 | 结果 |
+|---|---|---|---|
+| H1 | 稀有咬钩期间输入真实草稿：输入后 0.5 秒不提示，1.5 秒和 3.5 秒显示 `bite · paused` 和 `Send your draft`；清空草稿后倒计时继续（2 秒内 0:09 → 0:07），暂停的约 3 秒没有消耗窗口 | 冒烟 | PASS |
+| H2 | 按 `1` 收杆：数字留在提示框期间（约 0.35 秒）连续采样，横条没有出现 `paused` 或草稿提示；卡片 3 行只写一次；横条显示 caught | 冒烟 + GIF v2 录制 | PASS |
+| H3 | 真实测试先红后绿，绿之后的模型请求不再覆盖工作记忆：卡片第三行 `caught as tests turned green`。debug 日志记录 `signal: test command red`、`signal: test command green -> tests-green`（只记结果，不记命令文本） | GIF v2 录制 | PASS（修复前同一流程得到 `caught during a tool run`） |
+| H4 | 工具运行中收杆，期间有模型请求：卡片如实写 `caught during a tool run` | 冒烟 | PASS |
+| H5 | 真实构建、默认参数：加载、抛竿、`waiting · 0:02 · depth 0 m`；debug 日志中没有 reelquiet 的 refused/failed/error | 真实 | PASS |
+
+Transcript 重绘：v1 GIF 约第 10 秒，第三行卡片在一帧（38ms）内出现两次。会话 transcript 显示插件只写了 3 行，所以这是 Claude Code TUI 滚动时的差分重绘，不是插件缺陷，代码没有改。v2（88x28）没有任何一帧重复。工具：`docs/demo/check-transcript.py`。
