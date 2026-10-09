@@ -1,16 +1,16 @@
 # ReelQuiet demo recording
 
 A repeatable recording of one real ReelQuiet session, for the README GIF.
-**Status: draft v2, in review.** The main README does not embed it yet.
+**Status: v2, accepted 2026-10-09** and embedded in the main README with the accelerated-settings note.
 
 ```
 docs/demo/
   record-demo.sh        records the session (tmux + asciinema) and renders the GIF (agg)
   postprocess.py        masks the banner model line, cuts the detach screen
   check-transcript.py   replays the cast; tells TUI repaints from repeated writes
-  draft/
-    reelquiet-demo.cast   published asciinema cast (88x28)
-    reelquiet-demo.gif    rendered GIF (~11 s)
+  reelquiet-demo.cast   accepted asciinema cast (88x28)
+  reelquiet-demo.gif    accepted GIF (~11 s), shown in the main README
+  draft/                where new takes land (git-ignored)
 ```
 
 ## What the clip shows
@@ -95,7 +95,7 @@ accepting a take.
 - **Manual check after each run**, which should print nothing:
 
   ```sh
-  grep -iE '<your model id>|billing|/home/' docs/demo/draft/reelquiet-demo.cast
+  grep -iE '<your model id>|billing|/home/' docs/demo/draft/reelquiet-demo.cast docs/demo/reelquiet-demo.cast
   ```
 
 ## Transcript repaints vs. repeated writes
@@ -105,7 +105,7 @@ single intermediate frame can briefly show one row twice. To tell that apart
 from the plugin writing a row twice, run:
 
 ```sh
-python3 docs/demo/check-transcript.py docs/demo/draft/reelquiet-demo.cast \
+python3 docs/demo/check-transcript.py docs/demo/reelquiet-demo.cast \
   ~/.claude/projects/-tmp-reelquiet-demo-pond-demo/<session>.jsonl
 ```
 
@@ -132,7 +132,9 @@ docs/demo/record-demo.sh
 ```
 
 Each run takes about 40 s and makes one real model run (`--model haiku`). It
-writes `docs/demo/draft/reelquiet-demo.cast` and `.gif`.
+writes `docs/demo/draft/reelquiet-demo.cast` and `.gif`, which git ignores.
+A take replaces the README asset only after review: check the frames, the third
+card row and the privacy grep, then copy both files up to `docs/demo/`.
 
 - `DEMO_DEBUG=1` also writes Claude Code's debug log to `$DEMO/debug.log`. The
   log never appears on screen.

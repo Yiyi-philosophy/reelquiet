@@ -4,7 +4,7 @@
 
 ## Stage 2 Engineering Review
 
-**状态**：BLOCKED（等待前置条件满足）
+**状态**：BLOCKED（等待前置条件满足）。进度：Gate 1 已满足（GIF v2 于 2026-10-09 验收，已合入 README）；Gate 3 进行中，自用周 2026-10-09 至 2026-10-15，记录在 `docs/dogfood/README.md`。CEO review 在自用数据之后进行。
 
 **Gate**：
 1. Stage 1 完成（包括 GIF 录制）。

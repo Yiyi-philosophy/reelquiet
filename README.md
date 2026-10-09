@@ -2,6 +2,10 @@
 
 **Claude codes. You fish.**
 
+![ReelQuiet in a real Claude Code session: Claude fixes a failing test while a rare fangtooth bites; pressing 1 reels it in, and the catch card remembers that the tests turned green.](docs/demo/reelquiet-demo.gif)
+
+<sub>Real session, real plugin. **The demo uses accelerated encounter settings**: a rare bite within seconds, every time. Normal play is slower, and rare fish are deliberately scarce. How it was recorded: [`docs/demo/`](docs/demo/).</sub>
+
 A quiet fishing pond that lives above your Claude Code prompt while Claude works.
 
 Submit a task and a line goes in. While Claude reads, thinks and runs tools, the pond runs. Common fish reel themselves in. Once in a while a rare one bites, and you can press `1` to bring it in. If Claude needs you, for a permission prompt or a question, the pond pauses. Every fish is a real species, and every catch remembers what you were working on.
@@ -9,8 +13,6 @@ Submit a task and a line goes in. While Claude reads, thinks and runs tools, the
 Not an official Anthropic product.
 
 > Status: Stage 1 preview. Terminal only. Tested with Claude Code 2.1.292.
-
-> Demo: a recording is in review under [`docs/demo/`](docs/demo/). It uses accelerated encounter settings (a rare bite within seconds, every time). Normal play is slower, and rare fish are deliberately scarce.
 
 ## Try it
 

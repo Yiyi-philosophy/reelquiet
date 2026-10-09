@@ -2,3 +2,5 @@
 
 # Unmasked demo recordings never enter git (docs/demo/README.md, Privacy).
 *.raw.cast
+# New demo takes land here for review; accepted ones are copied up to docs/demo/.
+docs/demo/draft/
